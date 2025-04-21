@@ -28,6 +28,7 @@ typedef struct {
     int p;        // Port number
     int s;        // Status (0=master, 1=slave)
     int t;        // Number of slaves
+    int *vector_y; // New field for vector y
     SlaveInfo slaves[MAX_SLAVES];
 } ProgramState;
 
@@ -68,6 +69,12 @@ void allocate_matrix(ProgramState *state) {
             exit(EXIT_FAILURE);
         }
     }
+
+    state->vector_y = (int *)malloc(state->n * sizeof(int));
+    if (!state->vector_y) {
+        perror("Vector y allocation failed");
+        exit(EXIT_FAILURE);
+    }
 }
 
 void free_matrix(ProgramState *state) {
@@ -77,6 +84,7 @@ void free_matrix(ProgramState *state) {
         }
         free(state->matrix);
     }
+    if (state->vector_y) free(state->vector_y);
 }
 
 void create_matrix(ProgramState *state) {
@@ -85,6 +93,13 @@ void create_matrix(ProgramState *state) {
         for (int j = 0; j < state->n; j++) {
             state->matrix[i][j] = rand() % 100 + 1;
         }
+    }
+}
+
+void create_vector_y(ProgramState *state) {
+    srand(time(NULL) + 1);
+    for (int i = 0; i < state->n; i++) {
+        state->vector_y[i] = rand() % 100 + 1;
     }
 }
 
@@ -138,6 +153,12 @@ void *send_to_slave(void *arg) {
     int info[2] = {rows_for_this_slave, state->n};
     if (send(sock, info, sizeof(info), 0) != sizeof(info)) {
         perror("Failed to send matrix info");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send the full vector_y
+    if (send(sock, state->vector_y, state->n * sizeof(int), 0) != state->n * sizeof(int)) {
+        perror("Failed to send vector y");
         exit(EXIT_FAILURE);
     }
 
@@ -231,6 +252,21 @@ void distribute_submatrices(ProgramState *state) {
     // Wait for all threads to complete
     for (int slave = 0; slave < slave_count; slave++) {
         pthread_join(threads[slave], NULL);
+    }
+
+    // Receive transformed data from slaves
+    for (int slave = 0; slave < slave_count; slave++) {
+        int rows_to_receive = args[slave].rows_for_this_slave;
+        for (int i = 0; i < rows_to_receive; i++) {
+            int *transformed_row = (int *)malloc(state->n * sizeof(int));
+            if (recv(threads[slave], transformed_row, state->n * sizeof(int), 0) != state->n * sizeof(int)) {
+                perror("Failed to receive transformed row");
+                free(transformed_row);
+                exit(EXIT_FAILURE);
+            }
+            // Process transformed_row if needed
+            free(transformed_row);
+        }
     }
 
     gettimeofday(&time_after, NULL);
@@ -350,23 +386,58 @@ void slave_listen(ProgramState *state) {
     printf("Slave finished receiving data from master.\n");
     printf("Total data received: %zu bytes\n", total_data_received);
 
-    // Print the received matrix
-    // print_matrix(submatrix, rows, cols);
-
-    // Simulate processing and send acknowledgment
-    if (send(master_sock, "ack", 4, 0) != 4) {
-        perror("Failed to send acknowledgment");
+    // Receive the full vector y
+    int *vector_y = (int *)malloc(cols * sizeof(int));
+    if (!vector_y) {
+        perror("Vector y allocation failed");
+        exit(EXIT_FAILURE);
+    }
+    if (recv(master_sock, vector_y, cols * sizeof(int), 0) != cols * sizeof(int)) {
+        perror("Failed to receive vector y");
         exit(EXIT_FAILURE);
     }
 
-    printf("Slave sent acknowledgment to master.\n");
+    // Start timing for computation
+    gettimeofday(&time_before, NULL);
+
+    // Perform Min-Max Transformation (row-wise)
+    double *row_minmax = (double *)malloc(cols * sizeof(double));
+    for (int i = 0; i < rows; i++) {
+        int min_val = submatrix[i][0];
+        int max_val = submatrix[i][0];
+        for (int j = 1; j < cols; j++) {
+            if (submatrix[i][j] < min_val) min_val = submatrix[i][j];
+            if (submatrix[i][j] > max_val) max_val = submatrix[i][j];
+        }
+        for (int j = 0; j < cols; j++) {
+            if (max_val != min_val)
+                row_minmax[j] = (double)(submatrix[i][j] - min_val) / (max_val - min_val);
+            else
+                row_minmax[j] = 0.0;
+        }
+        for (int j = 0; j < cols; j++) {
+            submatrix[i][j] = (int)(row_minmax[j] * 10000); // Scale for sending as int
+        }
+    }
+    free(row_minmax);
+
+    // Send back the transformed submatrix to master
+    for (int i = 0; i < rows; i++) {
+        if (send(master_sock, submatrix[i], cols * sizeof(int), 0) != cols * sizeof(int)) {
+            perror("Failed to send transformed row");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    printf("Slave sent transformed data to master.\n");
 
     gettimeofday(&time_after, NULL);
     double elapsed = (time_after.tv_sec - time_before.tv_sec) + 
                     (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
     printf("Slave elapsed time: %.6f seconds\n", elapsed);
 
-    // Free submatrix memory
+    // Free allocated memory
+    free(vector_y);
     for (int i = 0; i < rows; i++) {
         free(submatrix[i]);
     }
@@ -387,6 +458,7 @@ int main(int argc, char *argv[]) {
     state.p = atoi(argv[2]);
     state.s = atoi(argv[3]);
     state.matrix = NULL;
+    state.vector_y = NULL; // Initialize vector_y
     state.t = 0;
 
     if (state.n <= 0) {
@@ -407,6 +479,7 @@ int main(int argc, char *argv[]) {
         read_config(&state, state.t);
         allocate_matrix(&state);
         create_matrix(&state);
+        create_vector_y(&state); // Call to create vector_y
 
         // Print the created matrix
         printf("Master created matrix:\n");
@@ -419,4 +492,3 @@ int main(int argc, char *argv[]) {
     }
 
     return EXIT_SUCCESS;
-}
