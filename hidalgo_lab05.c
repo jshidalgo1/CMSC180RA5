@@ -46,6 +46,7 @@ typedef struct {
     int slave_index;
     int start_row;
     int rows_for_this_slave;
+    int sock; 
 } ThreadArgs;
 
 int get_usable_cores() {
@@ -193,6 +194,8 @@ void *send_to_slave(void *arg) {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
+    // Store the socket in args
+    args->sock = sock;
 
     // Set TCP_NODELAY and buffer sizes
     int flag = 1;
@@ -278,7 +281,6 @@ void *send_to_slave(void *arg) {
         exit(EXIT_FAILURE);
     }
 
-    close(sock);
     return NULL;
 }
 
@@ -321,13 +323,14 @@ void distribute_submatrices(ProgramState *state) {
         pthread_join(threads[slave], NULL);
     }
 
-    // Receive normalized submatrices from slaves
+    // Receive normalized submatrices from slaves using the stored sockets
     start_row = 0;
     for (int slave = 0; slave < slave_count; slave++) {
         int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
+        int sock = args[slave].sock;  // Use the stored socket
 
         // Receive the normalized submatrix in chunks
-        int chunk_size = CHUNK_SIZE * state->n * sizeof(double); // Chunk size in bytes
+        int chunk_size = CHUNK_SIZE * state->n * sizeof(double);
         double *buffer = (double *)malloc(chunk_size);
         if (!buffer) {
             perror("Buffer allocation failed");
@@ -336,11 +339,11 @@ void distribute_submatrices(ProgramState *state) {
 
         for (int i = 0; i < rows_for_this_slave; i += CHUNK_SIZE) {
             int rows_to_receive = (i + CHUNK_SIZE > rows_for_this_slave) ? 
-                                  (rows_for_this_slave - i) : CHUNK_SIZE;
+                                (rows_for_this_slave - i) : CHUNK_SIZE;
             int total_bytes = rows_to_receive * state->n * sizeof(double);
 
             // Receive the chunk
-            if (recv(state->slaves[slave].port, buffer, total_bytes, 0) != total_bytes) {
+            if (recv(sock, buffer, total_bytes, 0) != total_bytes) {
                 perror("Failed to receive normalized matrix chunk");
                 free(buffer);
                 exit(EXIT_FAILURE);
@@ -348,12 +351,14 @@ void distribute_submatrices(ProgramState *state) {
 
             // Copy rows from the buffer into the normalized matrix
             for (int j = 0; j < rows_to_receive; j++) {
-                memcpy(normalized_matrix[start_row + i + j], buffer + j * state->n, state->n * sizeof(double));
+                memcpy(normalized_matrix[start_row + i + j], 
+                      buffer + j * state->n, 
+                      state->n * sizeof(double));
             }
         }
 
         free(buffer);
-
+        close(sock);  // Now we can close the socket
         start_row += rows_for_this_slave;
     }
 
@@ -445,6 +450,12 @@ void slave_listen(ProgramState *state) {
     }
 
     printf("Slave finished receiving data from master.\n");
+
+    // Send acknowledgment
+    if (send(master_sock, "ack", 4, 0) != 4) {
+    perror("Failed to send acknowledgment");
+    exit(EXIT_FAILURE);
+    }
 
     // Allocate memory for normalized matrix
     double **normalized_matrix = (double **)malloc(rows * sizeof(double *));
@@ -557,9 +568,9 @@ int main(int argc, char *argv[]) {
         allocate_matrix(&state);
         create_matrix(&state);
 
-        // Print the created matrix
-        printf("Master created matrix:\n");
-        // print_matrix(state.matrix, state.n, state.n);
+        // Print the original matrix
+        printf("Master created original matrix:\n");
+        print_matrix(state.original_matrix, state.n, state.n);
 
         // Start timing the entire process
         struct timeval total_time_before, total_time_after;
