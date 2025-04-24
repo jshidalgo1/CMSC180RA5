@@ -13,9 +13,9 @@
 #include <sched.h> // For sched_setaffinity
 
 #define MAX_SLAVES 16
-#define BUFFER_SIZE (1 * 1024 * 1024)  // 1MB buffer
+#define BUFFER_SIZE (15 * 1024 * 1024)  // 1MB buffer
 #define CONFIG_FILE "config.txt"
-#define CHUNK_SIZE 10              // Rows per chunk
+#define CHUNK_SIZE 5              // Rows per chunk
 
 typedef struct {
     char ip[16];
@@ -364,12 +364,12 @@ void distribute_submatrices(ProgramState *state) {
 
     // Print the final normalized matrix
     printf("Normalized matrix:\n");
-    for (int i = 0; i < state->n; i++) {
-        for (int j = 0; j < state->n; j++) {
-            printf("%.2f ", normalized_matrix[i][j]);
-        }
-        printf("\n");
-    }
+    //for (int i = 0; i < state->n; i++) {
+    //    for (int j = 0; j < state->n; j++) {
+    //        printf("%.2f ", normalized_matrix[i][j]);
+    //    }
+    //    printf("\n");
+    //}
 
     // Free the normalized matrix
     for (int i = 0; i < state->n; i++) {
@@ -490,12 +490,12 @@ void slave_listen(ProgramState *state) {
     }
 
     printf("Slave normalized matrix:\n");
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            printf("%.2f ", normalized_matrix[i][j]);
-        }
-        printf("\n");
-    }
+    //for (int i = 0; i < rows; i++) {
+    //    for (int j = 0; j < cols; j++) {
+    //        printf("%.2f ", normalized_matrix[i][j]);
+    //    }
+    //    printf("\n");
+    //}
 
     // Send the normalized submatrix back to the master in chunks
     int chunk_size = CHUNK_SIZE * cols * sizeof(double); // Chunk size in bytes
@@ -569,8 +569,8 @@ int main(int argc, char *argv[]) {
         create_matrix(&state);
 
         // Print the original matrix
-        printf("Master created original matrix:\n");
-        print_matrix(state.original_matrix, state.n, state.n);
+        //printf("Master created original matrix:\n");
+        //print_matrix(state.original_matrix, state.n, state.n);
 
         // Start timing the entire process
         struct timeval total_time_before, total_time_after;
