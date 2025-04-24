@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,11 +10,15 @@
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdint.h> // Include for uint8_t
+#include <sched.h> // For sched_setaffinity
 
 #define MAX_SLAVES 16
 #define BUFFER_SIZE (1 * 1024 * 1024)  // 1MB buffer
 #define CONFIG_FILE "config.txt"
 #define CHUNK_SIZE 10              // Rows per chunk
+
+// Forward declaration for get_usable_cores
+int get_usable_cores();
 
 typedef struct {
     char ip[16];
@@ -21,13 +26,23 @@ typedef struct {
 } SlaveInfo;
 
 typedef struct {
-    int **matrix; // Change matrix type to int
-    int n;        // Matrix size
-    int p;        // Port number
-    int s;        // Status (0=master, 1=slave)
-    int t;        // Number of slaves
+    int **matrix;          // Normalized matrix
+    int **original_matrix; // Original matrix
+    int n;                 // Matrix size
+    int p;                 // Port number
+    int s;                 // Status (0=master, 1=slave)
+    int t;                 // Number of slaves
     SlaveInfo slaves[MAX_SLAVES];
 } ProgramState;
+
+typedef struct {
+    int start_row;
+    int end_row;
+    int **submatrix;
+    double **normalized_matrix;
+    int cols;
+    int core_id; // Core to bind the thread
+} MMTArgs;
 
 typedef struct {
     ProgramState *state;
@@ -53,22 +68,43 @@ void read_config(ProgramState *state, int required_slaves) {
 }
 
 void allocate_matrix(ProgramState *state) {
+    // Allocate memory for the original matrix
+    state->original_matrix = (int **)malloc(state->n * sizeof(int *));
+    if (!state->original_matrix) {
+        perror("Original matrix allocation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Allocate memory for the normalized matrix
     state->matrix = (int **)malloc(state->n * sizeof(int *));
     if (!state->matrix) {
-        perror("Matrix allocation failed");
+        perror("Normalized matrix allocation failed");
         exit(EXIT_FAILURE);
     }
 
     for (int i = 0; i < state->n; i++) {
+        state->original_matrix[i] = (int *)malloc(state->n * sizeof(int));
+        if (!state->original_matrix[i]) {
+            perror("Original matrix row allocation failed");
+            exit(EXIT_FAILURE);
+        }
+
         state->matrix[i] = (int *)malloc(state->n * sizeof(int));
         if (!state->matrix[i]) {
-            perror("Matrix row allocation failed");
+            perror("Normalized matrix row allocation failed");
             exit(EXIT_FAILURE);
         }
     }
 }
 
 void free_matrix(ProgramState *state) {
+    if (state->original_matrix) {
+        for (int i = 0; i < state->n; i++) {
+            free(state->original_matrix[i]);
+        }
+        free(state->original_matrix);
+    }
+
     if (state->matrix) {
         for (int i = 0; i < state->n; i++) {
             free(state->matrix[i]);
@@ -81,13 +117,48 @@ void create_matrix(ProgramState *state) {
     srand(time(NULL));
     for (int i = 0; i < state->n; i++) {
         for (int j = 0; j < state->n; j++) {
-            state->matrix[i][j] = rand() % 100 + 1;
+            state->original_matrix[i][j] = rand() % 100 + 1;
+            state->matrix[i][j] = state->original_matrix[i][j]; // Copy to normalized matrix
         }
     }
 }
 
-#include <unistd.h> // For usleep
-#include <sys/time.h> // For timing
+
+
+
+void *threaded_mmt(void *arg) {
+    MMTArgs *args = (MMTArgs *)arg;
+
+    // Set core affinity
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(args->core_id, &cpuset);
+    pthread_t thread = pthread_self();
+    if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) != 0) {
+        perror("Failed to set thread affinity");
+        pthread_exit(NULL);
+    }
+
+    // Perform Min-Max Transformation
+    for (int i = args->start_row; i < args->end_row; i++) {
+        int min_val = args->submatrix[i][0];
+        int max_val = args->submatrix[i][0];
+        for (int j = 1; j < args->cols; j++) {
+            if (args->submatrix[i][j] < min_val) min_val = args->submatrix[i][j];
+            if (args->submatrix[i][j] > max_val) max_val = args->submatrix[i][j];
+        }
+
+        for (int j = 0; j < args->cols; j++) {
+            if (max_val == min_val) {
+                args->normalized_matrix[i][j] = 0.0; // Avoid division by zero
+            } else {
+                args->normalized_matrix[i][j] = (double)(args->submatrix[i][j] - min_val) / (max_val - min_val);
+            }
+        }
+    }
+
+    pthread_exit(NULL);
+}
 
 void *send_to_slave(void *arg) {
     ThreadArgs *args = (ThreadArgs *)arg;
@@ -205,6 +276,20 @@ void distribute_submatrices(ProgramState *state) {
     pthread_t threads[MAX_SLAVES];
     ThreadArgs args[MAX_SLAVES];
 
+    // Allocate memory for the normalized matrix
+    double **normalized_matrix = (double **)malloc(state->n * sizeof(double *));
+    if (!normalized_matrix) {
+        perror("Normalized matrix allocation failed");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < state->n; i++) {
+        normalized_matrix[i] = (double *)malloc(state->n * sizeof(double));
+        if (!normalized_matrix[i]) {
+            perror("Normalized matrix row allocation failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+
     for (int slave = 0; slave < slave_count; slave++) {
         args[slave].state = state;
         args[slave].slave_index = slave;
@@ -221,10 +306,62 @@ void distribute_submatrices(ProgramState *state) {
         pthread_join(threads[slave], NULL);
     }
 
+    // Receive normalized submatrices and elapsed times from slaves
+    start_row = 0;
+    for (int slave = 0; slave < slave_count; slave++) {
+        int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
+
+        // Receive the normalized submatrix row by row
+        for (int i = 0; i < rows_for_this_slave; i++) {
+            if (recv(state->slaves[slave].port, normalized_matrix[start_row + i], 
+                     state->n * sizeof(double), 0) != state->n * sizeof(double)) {
+                perror("Failed to receive normalized matrix row");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // Print the received normalized submatrix from each slave
+        printf("Master received normalized submatrix from slave %d:\n", slave);
+        for (int i = start_row; i < start_row + rows_for_this_slave; i++) {
+            for (int j = 0; j < state->n; j++) {
+                printf("%.2f ", normalized_matrix[i][j]);
+            }
+            printf("\n");
+        }
+
+        // Receive the elapsed time for MMT computation
+        double elapsed_time;
+        if (recv(state->slaves[slave].port, &elapsed_time, sizeof(elapsed_time), 0) != sizeof(elapsed_time)) {
+            perror("Failed to receive elapsed time from slave");
+            exit(EXIT_FAILURE);
+        }
+
+        // Print the elapsed time for this slave
+        printf("Slave %d MMT computation time: %.6f seconds\n", slave, elapsed_time);
+
+        start_row += rows_for_this_slave;
+    }
+
     gettimeofday(&time_after, NULL);
     double elapsed = (time_after.tv_sec - time_before.tv_sec) + 
-                    (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
+                     (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
+
     printf("Master elapsed time: %.6f seconds\n", elapsed);
+
+    // Print the final normalized matrix (already present in the code)
+    printf("Normalized matrix:\n");
+    for (int i = 0; i < state->n; i++) {
+        for (int j = 0; j < state->n; j++) {
+            printf("%.2f ", normalized_matrix[i][j]);
+        }
+        printf("\n");
+    }
+
+    // Free the normalized matrix
+    for (int i = 0; i < state->n; i++) {
+        free(normalized_matrix[i]);
+    }
+    free(normalized_matrix);
 }
 
 void print_matrix(int **matrix, int rows, int cols) {
@@ -232,6 +369,15 @@ void print_matrix(int **matrix, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             printf("%d ", matrix[i][j]);
+        }
+        printf("\n");
+    }
+}
+
+void print_double_matrix(double **matrix, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%.2f ", matrix[i][j]);
         }
         printf("\n");
     }
@@ -268,16 +414,12 @@ void slave_listen(ProgramState *state) {
 
     printf("Slave listening on port %d...\n", state->p);
 
-    struct timeval time_before, time_after;
-
     int addrlen = sizeof(address);
     int master_sock = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
     if (master_sock < 0) {
         perror("Accept failed");
         exit(EXIT_FAILURE);
     }
-
-    gettimeofday(&time_before, NULL);
 
     // Receive submatrix size info
     int info[2];
@@ -305,63 +447,110 @@ void slave_listen(ProgramState *state) {
     }
 
     // Receive the submatrix data in chunks
-    size_t total_data_received = 0; // Track total data received
-    for (int i = 0; i < rows; i += CHUNK_SIZE) {
-        int rows_to_receive = (i + CHUNK_SIZE > rows) ? (rows - i) : CHUNK_SIZE;
-        int total_bytes = rows_to_receive * cols * sizeof(int);
-        
-        // Allocate temporary buffer
-        int *buffer = malloc(total_bytes);
-        
-        // Receive the chunk
-        ssize_t bytes_received = 0;
-        while (bytes_received < total_bytes) {
-            ssize_t result = recv(master_sock, (char *)buffer + bytes_received, 
-                                 total_bytes - bytes_received, 0);
-            if (result < 0) {
-                perror("Failed to receive matrix chunk");
-                free(buffer);
-                exit(EXIT_FAILURE);
-            }
-            bytes_received += result;
+    for (int i = 0; i < rows; i++) {
+        if (recv(master_sock, submatrix[i], cols * sizeof(int), 0) != cols * sizeof(int)) {
+            perror("Failed to receive matrix row");
+            exit(EXIT_FAILURE);
         }
-
-        total_data_received += bytes_received; // Accumulate data received
-        
-        // Copy to submatrix
-        for (int j = 0; j < rows_to_receive; j++) {
-            memcpy(submatrix[i + j], buffer + j * cols, cols * sizeof(int));
-        }
-        free(buffer);
     }
 
     printf("Slave finished receiving data from master.\n");
-    printf("Total data received: %zu bytes\n", total_data_received);
 
-    // Print the received matrix
-    // print_matrix(submatrix, rows, cols);
+    // Print the received submatrix
+    printf("Slave received submatrix:\n");
+    print_matrix(submatrix, rows, cols);
 
-    // Simulate processing and send acknowledgment
-    if (send(master_sock, "ack", 4, 0) != 4) {
-        perror("Failed to send acknowledgment");
+    // Allocate memory for normalized matrix
+    double **normalized_matrix = (double **)malloc(rows * sizeof(double *));
+    if (!normalized_matrix) {
+        perror("Normalized matrix allocation failed");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < rows; i++) {
+        normalized_matrix[i] = (double *)malloc(cols * sizeof(double));
+        if (!normalized_matrix[i]) {
+            perror("Normalized matrix row allocation failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Start timing the MMT computation
+    struct timeval time_before, time_after;
+    gettimeofday(&time_before, NULL);
+
+    // Threaded MMT computation
+    int usable_cores = get_usable_cores();
+    pthread_t threads[usable_cores];
+    MMTArgs args[usable_cores];
+    int rows_per_thread = rows / usable_cores;
+    int extra_rows = rows % usable_cores;
+
+    for (int i = 0; i < usable_cores; i++) {
+        args[i].start_row = i * rows_per_thread;
+        args[i].end_row = args[i].start_row + rows_per_thread;
+        if (i == usable_cores - 1) {
+            args[i].end_row += extra_rows; // Last thread handles extra rows
+        }
+        args[i].submatrix = submatrix;
+        args[i].normalized_matrix = normalized_matrix;
+        args[i].cols = cols;
+        args[i].core_id = i; // Core to bind the thread
+
+        pthread_create(&threads[i], NULL, threaded_mmt, &args[i]);
+    }
+
+    // Wait for all threads to complete
+    for (int i = 0; i < usable_cores; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // End timing the MMT computation
+    gettimeofday(&time_after, NULL);
+
+    // Calculate elapsed time
+    double elapsed = (time_after.tv_sec - time_before.tv_sec) + 
+                     (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
+    printf("Slave MMT computation time: %.6f seconds\n", elapsed);
+
+    // Send the normalized submatrix back to the master
+    for (int i = 0; i < rows; i++) {
+        if (send(master_sock, normalized_matrix[i], cols * sizeof(double), 0) != cols * sizeof(double)) {
+            perror("Failed to send normalized matrix row");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Send the elapsed time to the master
+    if (send(master_sock, &elapsed, sizeof(elapsed), 0) != sizeof(elapsed)) {
+        perror("Failed to send elapsed time");
         exit(EXIT_FAILURE);
     }
 
+    printf("Slave sent normalized data and elapsed time back to master.\n");
+
+    // Send acknowledgment to the master
+    char ack[] = "ack";
+    if (send(master_sock, ack, sizeof(ack), 0) != sizeof(ack)) {
+        perror("Failed to send acknowledgment");
+        exit(EXIT_FAILURE);
+    }
     printf("Slave sent acknowledgment to master.\n");
 
-    gettimeofday(&time_after, NULL);
-    double elapsed = (time_after.tv_sec - time_before.tv_sec) + 
-                    (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
-    printf("Slave elapsed time: %.6f seconds\n", elapsed);
-
-    // Free submatrix memory
+    // Free allocated memory
     for (int i = 0; i < rows; i++) {
         free(submatrix[i]);
+        free(normalized_matrix[i]);
     }
     free(submatrix);
+    free(normalized_matrix);
 
     close(master_sock);
     close(server_fd);
+}
+
+int get_usable_cores() {
+    int total_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    return total_cores > 1 ? total_cores - 1 : 1; // Use n-1 cores, but at least 1
 }
 
 int main(int argc, char *argv[]) {
@@ -400,7 +589,19 @@ int main(int argc, char *argv[]) {
         printf("Master created matrix:\n");
         // print_matrix(state.matrix, state.n, state.n);
 
+        // Start timing the entire process
+        struct timeval total_time_before, total_time_after;
+        gettimeofday(&total_time_before, NULL);
+
         distribute_submatrices(&state);
+
+        // End timing the entire process
+        gettimeofday(&total_time_after, NULL);
+        double total_elapsed = (total_time_after.tv_sec - total_time_before.tv_sec) + 
+                               (total_time_after.tv_usec - total_time_before.tv_usec) / 1000000.0;
+
+        printf("Total time from sending to rebuilding normalized matrix: %.6f seconds\n", total_elapsed);
+
         free_matrix(&state);
     } else {
         slave_listen(&state);
@@ -408,3 +609,5 @@ int main(int argc, char *argv[]) {
 
     return EXIT_SUCCESS;
 }
+
+
