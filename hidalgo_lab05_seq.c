@@ -1,5 +1,4 @@
 #define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,10 +13,9 @@
 #include <sched.h> // For sched_setaffinity
 
 #define MAX_SLAVES 16
-#define BUFFER_SIZE (15* 1024 * 1024)  // 4MB buffer
+#define BUFFER_SIZE (15 * 1024 * 1024)  // 1MB buffer
 #define CONFIG_FILE "config.txt"
-#define CHUNK_SIZE 1              // Rows per chunk
-#define CHUNK_DELAY_US 1000
+#define CHUNK_SIZE 50              // Rows per chunk
 
 typedef struct {
     char ip[16];
@@ -253,8 +251,6 @@ void *send_to_slave(void *arg) {
             exit(EXIT_FAILURE);
         }
         free(buffer);
-        // Add delay after sending chunk
-        usleep(CHUNK_DELAY_US);
 
         
         // double delay_in_seconds = (double)total_bytes / 6062500; // 1,875,000 bytes per second
@@ -318,7 +314,6 @@ void distribute_submatrices(ProgramState *state) {
     // Receive normalized submatrices from slaves using the stored sockets
     start_row = 0;
     for (int slave = 0; slave < slave_count; slave++) {
-        printf("Processing slave %d\n", slave);
         int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
         int sock = args[slave].sock;  // Use the stored socket
 
@@ -331,49 +326,58 @@ void distribute_submatrices(ProgramState *state) {
         }
 
         for (int i = 0; i < rows_for_this_slave; i += CHUNK_SIZE) {
-            
-            // Send request for the next chunk
-            char request[16];
-            snprintf(request, sizeof(request), "SEND %d", i / CHUNK_SIZE);
-            if (send(sock, request, strlen(request) + 1, 0) <= 0) {
-                perror("Request send failed");
+            int rows_to_receive = (i + CHUNK_SIZE > rows_for_this_slave) ? 
+                                (rows_for_this_slave - i) : CHUNK_SIZE;
+            int total_bytes = rows_to_receive * state->n * sizeof(double);
+
+            // Receive the chunk
+            if (recv(sock, buffer, total_bytes, 0) != total_bytes) {
+                perror("Failed to receive normalized matrix chunk");
                 free(buffer);
                 exit(EXIT_FAILURE);
             }
-        
-            // Calculate chunk size
-            int rows_to_receive = (i + CHUNK_SIZE > rows_for_this_slave) ? 
-                                  (rows_for_this_slave - i) : CHUNK_SIZE;
-            int total_bytes = rows_to_receive * state->n * sizeof(double);
-        
-            int bytes_received = 0;
-            while (bytes_received < total_bytes) {
-                int received = recv(sock, (char*)buffer + bytes_received, total_bytes - bytes_received, 0);
-                if (received <= 0) {
-                    perror("Failed to receive normalized matrix chunk");
-                    free(buffer);
-                    exit(EXIT_FAILURE);
-                }
-                bytes_received += received;
-            }
-        
+
             // Copy rows from the buffer into the normalized matrix
             for (int j = 0; j < rows_to_receive; j++) {
-                memcpy(normalized_matrix[start_row + i + j], buffer + j * state->n, state->n * sizeof(double));
+                memcpy(normalized_matrix[start_row + i + j], 
+                      buffer + j * state->n, 
+                      state->n * sizeof(double));
             }
-            
         }
-        
+
         free(buffer);
         
         start_row += rows_for_this_slave;
-        char ack[4];
-        if (recv(args[slave].sock, ack, sizeof(ack), 0) != sizeof(ack)) {
-            perror("Ack receive failed");
-            close(args[slave].sock);
-            continue;  // Skip to next slave instead of exiting
-        }
     }
+
+        // Now expect "ack" from each slave
+    // In distribute_submatrices function:
+    for (int slave = 0; slave < slave_count; slave++) {
+        char ack[4];
+        memset(ack, 0, sizeof(ack)); // Initialize to zeros
+        
+        if (recv(args[slave].sock, ack, sizeof(ack), 0) != sizeof(ack)) {
+            perror("Failed to receive acknowledgment");
+            continue; // More graceful error handling
+        }
+        
+        // Compare carefully - use strncmp instead of strcmp
+        if (strncmp(ack, "ack", 3) != 0) {
+            fprintf(stderr, "Invalid acknowledgment from slave %d: '%s'\n", slave, ack);
+            // Continue anyway - don't exit
+        } else {
+            printf("Received acknowledgment from slave %d\n", slave);
+        }
+        
+        close(args[slave].sock);
+    }
+
+    // Close all slave sockets
+    //for (int slave = 0; slave < slave_count; slave++) {
+    //close(args[slave].sock);
+    //printf("Closed socket for slave %d\n", slave);
+    //}
+
 
 
     // Print the final normalized matrix
@@ -465,9 +469,9 @@ void slave_listen(ProgramState *state) {
 
     printf("Slave finished receiving data from master.\n");
 
-    // Start timing for Min-Max Transformation
-    struct timeval mmt_start, mmt_end;
-    gettimeofday(&mmt_start, NULL);
+   // Start timing for Min-Max Transformation
+   struct timeval mmt_start, mmt_end;
+   gettimeofday(&mmt_start, NULL);
 
     // Allocate memory for normalized matrix
     double **normalized_matrix = (double **)malloc(rows * sizeof(double *));
@@ -504,12 +508,18 @@ void slave_listen(ProgramState *state) {
     // End timing for Min-Max Transformation
     gettimeofday(&mmt_end, NULL);
     double mmt_elapsed = (mmt_end.tv_sec - mmt_start.tv_sec) + 
-                         (mmt_end.tv_usec - mmt_start.tv_usec) / 1000000.0;
-    
+                          (mmt_end.tv_usec - mmt_start.tv_usec) / 1000000.0;
+     
     printf("Min-Max Transformation completed in %.6f seconds for %d×%d matrix\n", 
-           mmt_elapsed, rows, cols);
+            mmt_elapsed, rows, cols);
 
     printf("Slave normalized matrix:\n");
+    //for (int i = 0; i < rows; i++) {
+    //    for (int j = 0; j < cols; j++) {
+    //        printf("%.2f ", normalized_matrix[i][j]);
+    //    }
+    //    printf("\n");
+    //}
 
     // Send the normalized submatrix back to the master in chunks
     int chunk_size = CHUNK_SIZE * cols * sizeof(double); // Chunk size in bytes
@@ -520,45 +530,29 @@ void slave_listen(ProgramState *state) {
     }
 
     for (int i = 0; i < rows; i += CHUNK_SIZE) {
-        // Wait for master's request
-        char request[16];
-        if (recv(master_sock, request, sizeof(request), 0) <= 0) {
-            perror("Request receive failed");
-            free(buffer);
-            exit(EXIT_FAILURE);
-        }
-    
-        // Parse the request (optional, for debugging)
-        printf("Slave received request: %s\n", request);
-    
-        // Prepare the chunk to send
         int rows_to_send = (i + CHUNK_SIZE > rows) ? (rows - i) : CHUNK_SIZE;
         int total_bytes = rows_to_send * cols * sizeof(double);
-    
+
+        // Copy rows into the buffer
         for (int j = 0; j < rows_to_send; j++) {
-            memcpy(buffer + (j * cols), normalized_matrix[i + j], cols * sizeof(double));
+            memcpy(buffer + j * cols, normalized_matrix[i + j], cols * sizeof(double));
         }
-    
+
         // Send the chunk
-        int bytes_sent = 0;
-        while (bytes_sent < total_bytes) {
-            int sent = send(master_sock, (char*)buffer + bytes_sent, total_bytes - bytes_sent, 0);
-            if (sent <= 0) {
-                perror("Failed to send normalized matrix chunk");
-                free(buffer);
-                exit(EXIT_FAILURE);
-            }
-            bytes_sent += sent;
+        if (send(master_sock, buffer, total_bytes, 0) != total_bytes) {
+            perror("Failed to send normalized matrix chunk");
+            free(buffer);
+            exit(EXIT_FAILURE);
         }
     }
 
     printf("Slave finished sending normalized data to master.\n");
-
+    char ack[4] = "ack";  // Explicitly set the contents
     // Send acknowledgment
-    if (send(master_sock, "ack", 4, 0) != 4) {
+    if (send(master_sock, ack, 4, 0) != 4) {
         perror("Failed to send acknowledgment");
         exit(EXIT_FAILURE);
-        }
+    }
 
     free(buffer);
 
