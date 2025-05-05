@@ -213,6 +213,16 @@ int main(int argc, char *argv[]) {
     int **matrix = receive_matrix(client_sock, &rows, &cols);
     printf("Received %dx%d submatrix from server\n", rows, cols);
     
+    // Print the received matrix
+    printf("\nReceived matrix:\n");
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%3d ", matrix[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
     // Apply min-max transformation
     printf("Applying min-max normalization...\n");
     float **normalized_matrix = min_max_transform(matrix, rows, cols);
