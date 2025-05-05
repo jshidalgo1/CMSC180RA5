@@ -1,0 +1,10 @@
+Matrix allocation successful
+Using optimal chunk size of 64 for matrix size 5000
+Sending data to slave 0 at IP 10.0.4.171, Port 5001
+Sending data to slave 1 at IP 10.0.5.229, Port 5002
+Sending rows 0 to 2499 to slave 0
+Slave 0: Sending chunk 1/40 (2.5%)
+Sending rows 2500 to 4999 to slave 1
+Slave 1: Sending chunk 1/40 (2.5%)
+Failed to send matrix chunk: Success
+Failed to send matrix chunk: Success
