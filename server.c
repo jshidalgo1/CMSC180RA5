@@ -4,9 +4,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <time.h>
-#include <bits/pthreadtypes.h>
 #include <asm-generic/socket.h>
-
+#include <pthread.h>
 #define PORT 8080
 #define MAX_MATRIX_SIZE 30000
 #define CHUNK_SIZE 1000  // Number of rows to send at a time
