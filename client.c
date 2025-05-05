@@ -5,13 +5,10 @@
 #include <arpa/inet.h>
 #include <float.h>
 #include <limits.h>
+#include <asm-generic/socket.h>
 
-<<<<<<< HEAD
 #define SERVER_IP "10.0.4.174"
 #define PORT 8080
-=======
-#define PORT 8081  // Each client will have its own port defined in config.txt
->>>>>>> 7426a79d975febaff53d7c8a07b85033511ca1a5
 #define CHUNK_SIZE 1000
 
 int **allocate_matrix(int rows, int cols) {
