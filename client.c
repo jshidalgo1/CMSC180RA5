@@ -94,34 +94,35 @@ int **receive_matrix(int sock, int *rows, int *cols) {
 }
 
 float **min_max_transform(int **matrix, int rows, int cols) {
-    // Find min and max values in the matrix
-    int min_val = INT_MAX;
-    int max_val = INT_MIN;
+    // Create normalized float matrix
+    float **normalized = allocate_float_matrix(rows, cols);
     
+    // Process each row separately
     for (int i = 0; i < rows; i++) {
+        // Find min and max values in this row
+        int min_val = INT_MAX;
+        int max_val = INT_MIN;
+        
         for (int j = 0; j < cols; j++) {
             if (matrix[i][j] < min_val) min_val = matrix[i][j];
             if (matrix[i][j] > max_val) max_val = matrix[i][j];
         }
-    }
-    
-    // Create normalized float matrix
-    float **normalized = allocate_float_matrix(rows, cols);
-    float range = (float)(max_val - min_val);
-    
-    // Apply min-max normalization
-    for (int i = 0; i < rows; i++) {
+        
+        // Apply min-max normalization to this row
+        float range = (float)(max_val - min_val);
+        
         for (int j = 0; j < cols; j++) {
             if (range > 0) {
                 normalized[i][j] = (float)(matrix[i][j] - min_val) / range;
             } else {
-                // Handle case where all values are the same
+                // Handle case where all values in row are the same
                 normalized[i][j] = 0.0f;
             }
         }
+        
+        printf("Row %d: Min value: %d, Max value: %d\n", i, min_val, max_val);
     }
     
-    printf("Min value: %d, Max value: %d\n", min_val, max_val);
     return normalized;
 }
 
