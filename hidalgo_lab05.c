@@ -283,15 +283,34 @@ void *send_to_slave(void *arg) {
         pthread_exit(NULL);
     }
     
+    printf("Sent test message to slave %d, waiting for acknowledgment...\n", slave);
+    
+    // Set a short timeout for handshake
+    struct timeval short_timeout;
+    short_timeout.tv_sec = 5;  // 5 second timeout for handshake
+    short_timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &short_timeout, sizeof(short_timeout));
+    
     // Wait for ack from slave
     char ack[64];
-    if (recv(sock, ack, sizeof(ack), 0) <= 0) {
-        perror("Failed to receive test acknowledgment");
+    memset(ack, 0, sizeof(ack));
+    int recv_result = recv(sock, ack, sizeof(ack), 0);
+    if (recv_result <= 0) {
+        if (recv_result == 0)
+            fprintf(stderr, "Connection closed by slave %d during handshake\n", slave);
+        else
+            perror("Failed to receive test acknowledgment");
         close(sock);
         pthread_exit(NULL);
     }
     
-    printf("Connection to slave %d verified\n", slave);
+    printf("Received acknowledgment from slave %d: %s\n", slave, ack);
+    
+    // Reset timeout to original value
+    struct timeval timeout;
+    timeout.tv_sec = 60;
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     
     // Now send the actual matrix info
     int info[2] = {rows_for_this_slave, state->n};
@@ -363,7 +382,8 @@ void *send_to_slave(void *arg) {
     printf("Slave %d: Sent %zu bytes in %.6f seconds (%.2f Mbps)\n", 
            slave, total_bytes_sent, elapsed, mbps);
 
-    return NULL;
+    // Return success value (non-NULL) to indicate thread completed successfully
+    pthread_exit((void*)1);  // Use any non-NULL value
 }
 
 void distribute_submatrices(ProgramState *state) {
@@ -400,14 +420,36 @@ void distribute_submatrices(ProgramState *state) {
         start_row += args[slave].rows_for_this_slave;
     }
 
+    // Array to track which threads completed successfully
+    int thread_success[MAX_SLAVES] = {0};
+
     // Wait for all threads to complete
     for (int slave = 0; slave < slave_count; slave++) {
-        pthread_join(threads[slave], NULL);
+        void *thread_result;
+        if (pthread_join(threads[slave], &thread_result) == 0) {
+            if (thread_result == NULL) {
+                printf("Warning: Thread for slave %d returned NULL (likely failed)\n", slave);
+            } else {
+                thread_success[slave] = 1;
+                printf("Thread for slave %d completed successfully\n", slave);
+            }
+        } else {
+            perror("Thread join failed");
+        }
     }
 
-    // Receive normalized submatrices from slaves using the stored sockets
+    // Receive normalized submatrices only from slaves that succeeded
     start_row = 0;
     for (int slave = 0; slave < slave_count; slave++) {
+        // Skip failed slaves
+        if (!thread_success[slave]) {
+            printf("Skipping slave %d as its thread failed\n", slave);
+            // Calculate rows for this slave to maintain proper row indexing
+            int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
+            start_row += rows_for_this_slave;
+            continue;
+        }
+        
         printf("Processing slave %d\n", slave);
         int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
         int sock = args[slave].sock;  // Use the stored socket
@@ -464,7 +506,6 @@ void distribute_submatrices(ProgramState *state) {
             continue;  // Skip to next slave instead of exiting
         }
     }
-
 
     // Print the final normalized matrix
     printf("Normalized matrix:\n");
@@ -526,7 +567,34 @@ void slave_listen(ProgramState *state) {
         exit(EXIT_FAILURE);
     }
 
-    // Receive submatrix size info
+    printf("Master connection accepted\n");
+    
+    // Handle connection test
+    char test_msg[64];
+    memset(test_msg, 0, sizeof(test_msg));
+    
+    int test_received = recv(master_sock, test_msg, sizeof(test_msg), 0);
+    if (test_received <= 0) {
+        perror("Failed to receive test message");
+        close(master_sock);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Received test message: %s\n", test_msg);
+    
+    // Send acknowledgment back
+    char ack[] = "TEST_ACK";
+    if (send(master_sock, ack, strlen(ack) + 1, 0) <= 0) {
+        perror("Failed to send test acknowledgment");
+        close(master_sock);
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Test acknowledgment sent\n");
+    
+    // Now receive the actual matrix info
     int info[2];
     if (recv(master_sock, info, sizeof(info), 0) != sizeof(info)) {
         perror("Failed to receive matrix info");
@@ -707,6 +775,46 @@ int calculate_optimal_chunk_size(int matrix_size) {
     else return 256;
 }
 
+// Add before main():
+
+void check_network_connectivity(ProgramState *state) {
+    printf("\nChecking network connectivity to slaves...\n");
+    
+    for (int i = 0; i < state->t; i++) {
+        printf("Checking slave %d at %s:%d... ", i, state->slaves[i].ip, state->slaves[i].port);
+        fflush(stdout);
+        
+        // Create socket for basic test
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("Socket creation failed");
+            continue;
+        }
+        
+        // Set short timeout
+        struct timeval timeout;
+        timeout.tv_sec = 2;
+        timeout.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        
+        // Try to connect
+        struct sockaddr_in slave_addr;
+        memset(&slave_addr, 0, sizeof(slave_addr));
+        slave_addr.sin_family = AF_INET;
+        slave_addr.sin_port = htons(state->slaves[i].port);
+        inet_pton(AF_INET, state->slaves[i].ip, &slave_addr.sin_addr);
+        
+        if (connect(sock, (struct sockaddr *)&slave_addr, sizeof(slave_addr)) < 0) {
+            perror("Failed");
+        } else {
+            printf("Success\n");
+        }
+        
+        close(sock);
+    }
+    printf("\n");
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 4 && argc != 5) {
         printf("Usage: %s <matrix_size> <port> <status (0=master, 1=slave)> [slave_count]\n", argv[0]);
@@ -736,6 +844,10 @@ int main(int argc, char *argv[]) {
         printf("Running as master with %d slaves\n", state.t);
         
         read_config(&state, state.t);
+
+        // Call this in main() after reading config but before distributing work:
+        check_network_connectivity(&state);
+
         allocate_matrix(&state);
         create_matrix(&state);
 
