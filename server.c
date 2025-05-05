@@ -165,7 +165,7 @@ int main() {
     printf("Client connected\n");
 
     // Create and send matrix
-    int rows = 100, cols = 100;  // Default size - adjust as needed
+    int rows = 20000, cols = 20000;  // Default size - adjust as needed
     printf("Creating %dx%d matrix...\n", rows, cols);
     int **matrix = create_random_matrix(rows, cols);
     

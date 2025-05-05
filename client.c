@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <float.h>
 
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "10.0.4.174"
 #define PORT 8080
 #define CHUNK_SIZE 1000
 
