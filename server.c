@@ -329,6 +329,15 @@ int main() {
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
+    printf("\nOriginal matrix:\n");
+    for (int i = 0; i < global_rows; i++) {
+        for (int j = 0; j < global_cols; j++) {
+            printf("%3d ", global_matrix[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
     // Connect to clients
     printf("Connecting to clients...\n");
     connect_to_clients();
