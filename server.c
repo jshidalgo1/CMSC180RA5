@@ -324,8 +324,8 @@ int main() {
     read_client_config();
     
     // Create matrix - adjust size as needed
-    global_rows = 1000;  // Adjust matrix size as needed
-    global_cols = 1000;
+    global_rows = 10;  // Adjust matrix size as needed
+    global_cols = 10;
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
@@ -367,8 +367,8 @@ int main() {
     
     // Print a sample of the normalized matrix
     printf("Sample of combined normalized matrix (up to 5x5):\n");
-    for (int i = 0; i < (global_rows < 5 ? global_rows : 5); i++) {
-        for (int j = 0; j < (global_cols < 5 ? global_cols : 5); j++) {
+    for (int i = 0; i < global_rows; i++) {
+        for (int j = 0; j < global_cols; j++) {
             printf("%.4f ", combined_matrix[i][j]);
         }
         printf("\n");
