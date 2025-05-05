@@ -36,6 +36,13 @@ void free_matrix(int **matrix, int rows) {
     free(matrix);
 }
 
+void free_float_matrix(float **matrix, int rows) {
+    for (int i = 0; i < rows; i++) {
+        free(matrix[i]);
+    }
+    free(matrix);
+}
+
 void send_matrix(int sock, int **matrix, int rows, int cols) {
     // First send matrix dimensions
     int dimensions[2] = {rows, cols};
@@ -65,7 +72,7 @@ void send_matrix(int sock, int **matrix, int rows, int cols) {
     }
 }
 
-int **receive_matrix(int sock, int *rows, int *cols) {
+float **receive_float_matrix(int sock, int *rows, int *cols) {
     // First receive matrix dimensions
     int dimensions[2];
     if (recv(sock, dimensions, sizeof(dimensions), MSG_WAITALL) != sizeof(dimensions)) {
@@ -76,14 +83,14 @@ int **receive_matrix(int sock, int *rows, int *cols) {
     *cols = dimensions[1];
 
     // Allocate matrix
-    int **matrix = (int **)malloc(*rows * sizeof(int *));
+    float **matrix = (float **)malloc(*rows * sizeof(float *));
     if (!matrix) {
         perror("Matrix allocation failed");
         exit(EXIT_FAILURE);
     }
 
     for (int i = 0; i < *rows; i++) {
-        matrix[i] = (int *)malloc(*cols * sizeof(int));
+        matrix[i] = (float *)malloc(*cols * sizeof(float));
         if (!matrix[i]) {
             perror("Matrix row allocation failed");
             exit(EXIT_FAILURE);
@@ -100,7 +107,7 @@ int **receive_matrix(int sock, int *rows, int *cols) {
         }
 
         for (int i = 0; i < chunk_rows; i++) {
-            if (recv(sock, matrix[received_rows + i], *cols * sizeof(int), MSG_WAITALL) != *cols * sizeof(int)) {
+            if (recv(sock, matrix[received_rows + i], *cols * sizeof(float), MSG_WAITALL) != *cols * sizeof(float)) {
                 perror("Receive row failed");
                 exit(EXIT_FAILURE);
             }
@@ -168,13 +175,22 @@ int main() {
     // Free the original matrix as we'll receive it back
     free_matrix(matrix, rows);
 
-    // Receive matrix back from client
-    printf("Waiting to receive matrix back from client...\n");
-    int **received_matrix = receive_matrix(new_socket, &rows, &cols);
-    printf("Received %dx%d matrix back from client\n", rows, cols);
+    // Receive normalized matrix back from client
+    printf("Waiting to receive normalized matrix back from client...\n");
+    float **received_matrix = receive_float_matrix(new_socket, &rows, &cols);
+    printf("Received %dx%d normalized matrix back from client\n", rows, cols);
+
+    // Print a sample of the normalized matrix (first 5x5 elements)
+    printf("Sample of normalized matrix received (up to 5x5):\n");
+    for (int i = 0; i < (rows < 5 ? rows : 5); i++) {
+        for (int j = 0; j < (cols < 5 ? cols : 5); j++) {
+            printf("%.4f ", received_matrix[i][j]);
+        }
+        printf("\n");
+    }
 
     // Clean up
-    free_matrix(received_matrix, rows);
+    free_float_matrix(received_matrix, rows);
     close(new_socket);
     close(server_fd);
 
