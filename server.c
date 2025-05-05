@@ -324,8 +324,8 @@ int main() {
     read_client_config();
     
     // Create matrix - adjust size as needed
-    global_rows = 10;  // Adjust matrix size as needed
-    global_cols = 10;
+    global_rows = 5;  // Adjust matrix size as needed
+    global_cols = 5;
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
