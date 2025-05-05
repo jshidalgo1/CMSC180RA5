@@ -4,9 +4,9 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <float.h>
+#include <limits.h>
 
-#define SERVER_IP "127.0.0.1"
-#define PORT 8080
+#define PORT 8081  // Each client will have its own port defined in config.txt
 #define CHUNK_SIZE 1000
 
 int **allocate_matrix(int rows, int cols) {
@@ -93,8 +93,9 @@ int **receive_matrix(int sock, int *rows, int *cols) {
 
 float **min_max_transform(int **matrix, int rows, int cols) {
     // Find min and max values in the matrix
-    int min_val;
-    int max_val;
+    int min_val = INT_MAX;
+    int max_val = INT_MIN;
+    
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             if (matrix[i][j] < min_val) min_val = matrix[i][j];
@@ -151,44 +152,70 @@ void send_float_matrix(int sock, float **matrix, int rows, int cols) {
     }
 }
 
-int main() {
-    int sock = 0;
-    struct sockaddr_in serv_addr;
+int main(int argc, char *argv[]) {
+    int server_fd, client_sock;
+    struct sockaddr_in address, client_addr;
+    int opt = 1;
+    int addrlen = sizeof(client_addr);
+    int client_port = PORT;
+    
+    // If port is provided as command line argument
+    if (argc > 1) {
+        client_port = atoi(argv[1]);
+    }
+    
+    printf("Starting client on port %d\n", client_port);
 
-    // Create socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    // Creating socket file descriptor
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
-
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-
-    // Convert IPv4 address from text to binary form
-    if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0) {
-        perror("Invalid address/Address not supported");
+    
+    // Set socket options
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("Setsockopt failed");
         exit(EXIT_FAILURE);
     }
-
-    // Connect to server
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection failed");
+    
+    // Configure address
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(client_port);
+    
+    // Bind socket to port
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("Bind failed");
         exit(EXIT_FAILURE);
     }
-
-    printf("Connected to server\n");
-
-    // Receive matrix from server
+    
+    // Listen for connections
+    if (listen(server_fd, 1) < 0) {
+        perror("Listen failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Client listening on port %d for server connection...\n", client_port);
+    
+    // Accept connection from server
+    if ((client_sock = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t*)&addrlen)) < 0) {
+        perror("Accept failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    printf("Server connected\n");
+    
+    // Receive submatrix from server
     int rows, cols;
     printf("Waiting to receive matrix from server...\n");
-    int **matrix = receive_matrix(sock, &rows, &cols);
-    printf("Received %dx%d matrix from server\n", rows, cols);
-
+    int **matrix = receive_matrix(client_sock, &rows, &cols);
+    printf("Received %dx%d submatrix from server\n", rows, cols);
+    
     // Apply min-max transformation
     printf("Applying min-max normalization...\n");
     float **normalized_matrix = min_max_transform(matrix, rows, cols);
     
-    // Print a sample of the normalized matrix (first 5x5 elements)
+    // Print a sample of the normalized matrix (first 5x5 elements or less)
     printf("Sample of normalized matrix (up to 5x5):\n");
     for (int i = 0; i < (rows < 5 ? rows : 5); i++) {
         for (int j = 0; j < (cols < 5 ? cols : 5); j++) {
@@ -196,16 +223,17 @@ int main() {
         }
         printf("\n");
     }
-
+    
     // Send normalized matrix back to server
     printf("Sending normalized matrix back to server...\n");
-    send_float_matrix(sock, normalized_matrix, rows, cols);
+    send_float_matrix(client_sock, normalized_matrix, rows, cols);
     printf("Normalized matrix sent back to server\n");
-
+    
     // Clean up
     free_matrix(matrix, rows);
     free_float_matrix(normalized_matrix, rows);
-    close(sock);
-
+    close(client_sock);
+    close(server_fd);
+    
     return 0;
 }
