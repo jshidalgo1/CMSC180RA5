@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <bits/pthreadtypes.h>
+#include <asm-generic/socket.h>
 
 #define PORT 8080
 #define MAX_MATRIX_SIZE 30000
