@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <time.h>
-#include <pthread.h>
 
 #define PORT 8080
 #define MAX_MATRIX_SIZE 30000
