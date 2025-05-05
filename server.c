@@ -317,7 +317,6 @@ float **combine_results() {
 
 int main() {
     srand(time(NULL));
-<<<<<<< HEAD
     int server_fd, new_socket;
     struct sockaddr_in address;
     int opt = 1;
@@ -365,8 +364,6 @@ int main() {
     int rows = 20000, cols = 20000;  // Default size - adjust as needed
     printf("Creating %dx%d matrix...\n", rows, cols);
     int **matrix = create_random_matrix(rows, cols);
-=======
->>>>>>> 7426a79d975febaff53d7c8a07b85033511ca1a5
     
     // Read client configuration
     read_client_config();
