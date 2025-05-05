@@ -223,8 +223,11 @@ void *send_to_slave(void *arg) {
     // Set TCP_NODELAY and larger buffer sizes
     int flag = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
-    int buf_size = BUFFER_SIZE * 2; // Double the buffer size
+    int buf_size = BUFFER_SIZE * 4; // Increase buffer size further
     setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    
+    // Add TCP_CORK option for better performance with large transfers
+    setsockopt(sock, IPPROTO_TCP, TCP_CORK, &flag, sizeof(int));
 
     // Add timeout
     struct timeval timeout;
@@ -283,10 +286,15 @@ void *send_to_slave(void *arg) {
         }
         
         // Send the chunk
-        if (send(sock, buffer, total_bytes, 0) != total_bytes) {
-            perror("Failed to send matrix chunk");
-            free(buffer);
-            exit(EXIT_FAILURE);
+        int bytes_sent = 0;
+        while (bytes_sent < total_bytes) {
+            int sent = send(sock, (char*)buffer + bytes_sent, total_bytes - bytes_sent, 0);
+            if (sent < 0) {
+                perror("Failed to send matrix chunk");
+                free(buffer);
+                exit(EXIT_FAILURE);
+            }
+            bytes_sent += sent;
         }
         free(buffer);
         // Add delay after sending chunk
