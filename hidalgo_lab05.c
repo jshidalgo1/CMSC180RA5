@@ -208,51 +208,101 @@ void *send_to_slave(void *arg) {
     int slave = args->slave_index;
     int start_row = args->start_row;
     int rows_for_this_slave = args->rows_for_this_slave;
+    int max_retries = 3; // Number of connection retries
 
     printf("Sending data to slave %d at IP %s, Port %d\n", 
            slave, state->slaves[slave].ip, state->slaves[slave].port);
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
+    int retry_count = 0;
+    int connected = 0;
+    int sock = -1;
+    
+    while (retry_count < max_retries && !connected) {
+        // Create socket
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("Socket creation failed");
+            sleep(2); // Wait before retry
+            retry_count++;
+            continue;
+        }
+        
+        // Set socket options
+        int flag = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
+        
+        // Increase buffer sizes significantly
+        int send_buf_size = BUFFER_SIZE * 4;
+        int recv_buf_size = BUFFER_SIZE * 4;
+        setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size));
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size));
+        
+        // Set timeouts
+        struct timeval timeout;
+        timeout.tv_sec = 60;  // 60 second timeout (increased)
+        timeout.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        
+        // Connect to slave
+        struct sockaddr_in slave_addr;
+        memset(&slave_addr, 0, sizeof(slave_addr));
+        slave_addr.sin_family = AF_INET;
+        slave_addr.sin_port = htons(state->slaves[slave].port);
+        inet_pton(AF_INET, state->slaves[slave].ip, &slave_addr.sin_addr);
+        
+        if (connect(sock, (struct sockaddr *)&slave_addr, sizeof(slave_addr)) < 0) {
+            perror("Connection failed");
+            close(sock);
+            printf("Retrying connection to slave %d (%d/%d)...\n", 
+                   slave, retry_count+1, max_retries);
+            sleep(5); // Wait 5 seconds before retry
+            retry_count++;
+            continue;
+        }
+        
+        connected = 1;
     }
+    
+    if (!connected) {
+        printf("Failed to connect to slave %d after %d attempts\n", slave, max_retries);
+        pthread_exit(NULL);
+    }
+    
     // Store the socket in args
     args->sock = sock;
 
-    // Set TCP_NODELAY and larger buffer sizes
-    int flag = 1;
-    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
-    int buf_size = BUFFER_SIZE * 4; // Increase buffer size further
-    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
-    
-    // Add TCP_CORK option for better performance with large transfers
-    setsockopt(sock, IPPROTO_TCP, TCP_CORK, &flag, sizeof(int));
-
-    // Add timeout
-    struct timeval timeout;
-    timeout.tv_sec = 30;  // 30 second timeout
-    timeout.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-    struct sockaddr_in slave_addr;
-    memset(&slave_addr, 0, sizeof(slave_addr));
-    slave_addr.sin_family = AF_INET;
-    slave_addr.sin_port = htons(state->slaves[slave].port);
-    inet_pton(AF_INET, state->slaves[slave].ip, &slave_addr.sin_addr);
-
-    if (connect(sock, (struct sockaddr *)&slave_addr, sizeof(slave_addr)) < 0) {
-        perror("Connection failed");
-        exit(EXIT_FAILURE);
+    // Send submatrix size info with a small message first to test connection
+    printf("Testing connection to slave %d...\n", slave);
+    char test_msg[64];
+    sprintf(test_msg, "TEST_CONNECTION");
+    if (send(sock, test_msg, strlen(test_msg)+1, 0) <= 0) {
+        perror("Connection test failed");
+        close(sock);
+        pthread_exit(NULL);
     }
-
-    // Send submatrix size info
+    
+    // Wait for ack from slave
+    char ack[64];
+    if (recv(sock, ack, sizeof(ack), 0) <= 0) {
+        perror("Failed to receive test acknowledgment");
+        close(sock);
+        pthread_exit(NULL);
+    }
+    
+    printf("Connection to slave %d verified\n", slave);
+    
+    // Now send the actual matrix info
     int info[2] = {rows_for_this_slave, state->n};
     if (send(sock, info, sizeof(info), 0) != sizeof(info)) {
         perror("Failed to send matrix info");
-        exit(EXIT_FAILURE);
+        close(sock);
+        pthread_exit(NULL);
     }
+
+    // Rest of the function continues as before...
+    printf("Connection to slave %d established successfully.\n", slave);
 
     // Start timing
     struct timeval time_before, time_after;
@@ -442,8 +492,14 @@ void slave_listen(ProgramState *state) {
     // Set socket options
     int flag = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-    int buf_size = BUFFER_SIZE;
+    
+    // Increase buffer size significantly
+    int buf_size = BUFFER_SIZE * 4;
     setsockopt(server_fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+    setsockopt(server_fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    
+    // Set keep-alive to detect connection failures
+    setsockopt(server_fd, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(int));
 
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
@@ -496,12 +552,41 @@ void slave_listen(ProgramState *state) {
     }
 
     // Receive the submatrix data in chunks
+    printf("Slave beginning to receive data in chunks...\n");
+    int *row_buffer = (int *)malloc(cols * sizeof(int));
+    if (!row_buffer) {
+        perror("Buffer allocation failed");
+        exit(EXIT_FAILURE);
+    }
+    
     for (int i = 0; i < rows; i++) {
-        if (recv(master_sock, submatrix[i], cols * sizeof(int), 0) != cols * sizeof(int)) {
-            perror("Failed to receive matrix row");
-            exit(EXIT_FAILURE);
+        int bytes_received = 0;
+        int bytes_to_receive = cols * sizeof(int);
+        
+        while (bytes_received < bytes_to_receive) {
+            int received = recv(master_sock, 
+                               (char*)row_buffer + bytes_received, 
+                               bytes_to_receive - bytes_received, 
+                               0);
+                               
+            if (received <= 0) {
+                perror("Failed to receive matrix row");
+                exit(EXIT_FAILURE);
+            }
+            bytes_received += received;
+        }
+        
+        // Copy the received data to the submatrix
+        memcpy(submatrix[i], row_buffer, bytes_to_receive);
+        
+        // Print progress occasionally
+        if (i % 100 == 0 || i == rows-1) {
+            printf("Received %d/%d rows (%.1f%%)\n", 
+                  i+1, rows, (i+1)*100.0/rows);
         }
     }
+    
+    free(row_buffer);
 
     printf("Slave finished receiving data from master.\n");
 
