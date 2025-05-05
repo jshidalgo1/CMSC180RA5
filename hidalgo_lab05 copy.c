@@ -386,14 +386,14 @@ void *send_to_slave(void *arg) {
     pthread_exit((void*)1);  // Use any non-NULL value
 }
 
-// Replace distribute_submatrices with this non-threaded version
-void distribute_submatrices_sequential(ProgramState *state) {
+void distribute_submatrices(ProgramState *state) {
     int slave_count = state->t;
     int base_rows_per_slave = state->n / slave_count;
     int extra_rows = state->n % slave_count;
     int start_row = 0;
 
-    printf("\n*** USING SEQUENTIAL (NON-THREADED) DISTRIBUTION ***\n");
+    pthread_t threads[MAX_SLAVES];
+    ThreadArgs args[MAX_SLAVES];
 
     // Allocate memory for the normalized matrix
     double **normalized_matrix = (double **)malloc(state->n * sizeof(double *));
@@ -409,270 +409,114 @@ void distribute_submatrices_sequential(ProgramState *state) {
         }
     }
 
-    // Track successful slaves
-    int slave_success[MAX_SLAVES] = {0};
-    int sockets[MAX_SLAVES] = {-1}; // Store socket for each slave
-    
-    // Process each slave sequentially
     for (int slave = 0; slave < slave_count; slave++) {
-        int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
+        args[slave].state = state;
+        args[slave].slave_index = slave;
+        args[slave].start_row = start_row;
+        args[slave].rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
         
-        printf("\n--- Processing Slave %d ---\n", slave);
-        printf("Sending data to slave %d at IP %s, Port %d\n", 
-               slave, state->slaves[slave].ip, state->slaves[slave].port);
-        printf("Rows %d to %d assigned to slave %d\n", 
-               start_row, start_row + rows_for_this_slave - 1, slave);
+        pthread_create(&threads[slave], NULL, send_to_slave, &args[slave]);
         
-        // CONNECT TO SLAVE
-        int max_retries = 3;
-        int retry_count = 0;
-        int sock = -1;
-        int connected = 0;
-        
-        while (retry_count < max_retries && !connected) {
-            sock = socket(AF_INET, SOCK_STREAM, 0);
-            if (sock < 0) {
-                perror("Socket creation failed");
-                sleep(2);
-                retry_count++;
-                continue;
-            }
-            
-            // Set socket options
-            int flag = 1;
-            setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-            setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
-            
-            // Increase buffer sizes
-            int send_buf_size = BUFFER_SIZE * 4;
-            int recv_buf_size = BUFFER_SIZE * 4;
-            setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size));
-            setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size));
-            
-            // Set timeouts
-            struct timeval timeout;
-            timeout.tv_sec = 60;
-            timeout.tv_usec = 0;
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            
-            // Connect to slave
-            struct sockaddr_in slave_addr;
-            memset(&slave_addr, 0, sizeof(slave_addr));
-            slave_addr.sin_family = AF_INET;
-            slave_addr.sin_port = htons(state->slaves[slave].port);
-            inet_pton(AF_INET, state->slaves[slave].ip, &slave_addr.sin_addr);
-            
-            if (connect(sock, (struct sockaddr *)&slave_addr, sizeof(slave_addr)) < 0) {
-                perror("Connection failed");
-                close(sock);
-                printf("Retrying connection to slave %d (%d/%d)...\n", 
-                       slave, retry_count+1, max_retries);
-                sleep(5);
-                retry_count++;
-                continue;
-            }
-            
-            connected = 1;
-        }
-        
-        if (!connected) {
-            printf("Failed to connect to slave %d after %d attempts, skipping\n", slave, max_retries);
-            // Update start row for next slave and continue
-            start_row += rows_for_this_slave;
-            continue;
-        }
-        
-        sockets[slave] = sock; // Store socket for later use
-        
-        // TEST CONNECTION
-        printf("Testing connection to slave %d...\n", slave);
-        char test_msg[64];
-        sprintf(test_msg, "TEST_CONNECTION");
-        if (send(sock, test_msg, strlen(test_msg)+1, 0) <= 0) {
-            perror("Connection test failed");
-            close(sock);
-            start_row += rows_for_this_slave;
-            continue;
-        }
-        
-        // Set shorter timeout for handshake
-        struct timeval short_timeout;
-        short_timeout.tv_sec = 5;
-        short_timeout.tv_usec = 0;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &short_timeout, sizeof(short_timeout));
-        
-        // Wait for ack
-        char ack[64];
-        memset(ack, 0, sizeof(ack));
-        int recv_result = recv(sock, ack, sizeof(ack), 0);
-        if (recv_result <= 0) {
-            if (recv_result == 0)
-                fprintf(stderr, "Connection closed by slave %d during handshake\n", slave);
-            else
-                perror("Failed to receive test acknowledgment");
-            close(sock);
-            start_row += rows_for_this_slave;
-            continue;
-        }
-        
-        printf("Received acknowledgment from slave %d: %s\n", slave, ack);
-        
-        // Reset timeout
-        timeout.tv_sec = 60;
-        timeout.tv_usec = 0;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        
-        // SEND MATRIX INFO
-        int info[2] = {rows_for_this_slave, state->n};
-        if (send(sock, info, sizeof(info), 0) != sizeof(info)) {
-            perror("Failed to send matrix info");
-            close(sock);
-            start_row += rows_for_this_slave;
-            continue;
-        }
-        
-        printf("Connection to slave %d established and info sent successfully\n", slave);
-        
-        // SEND DATA CHUNKS
-        struct timeval time_before, time_after;
-        gettimeofday(&time_before, NULL);
-        
-        size_t total_bytes_sent = 0;
-        int total_chunks = (rows_for_this_slave + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        
-        for (int i = 0, chunk_num = 0; i < rows_for_this_slave; i += CHUNK_SIZE, chunk_num++) {
-            // Show progress
-            if (chunk_num == 0 || chunk_num == total_chunks-1 || chunk_num % 10 == 0) {
-                printf("Slave %d: Sending chunk %d/%d (%.1f%%)\n", 
-                    slave, chunk_num+1, total_chunks, 
-                    (chunk_num+1) * 100.0 / total_chunks);
-            }
-            
-            int rows_to_send = (i + CHUNK_SIZE > rows_for_this_slave) ? 
-                              (rows_for_this_slave - i) : CHUNK_SIZE;
-            int total_bytes = rows_to_send * state->n * sizeof(int);
-            total_bytes_sent += total_bytes;
-            
-            // Allocate buffer
-            int *buffer = malloc(total_bytes);
-            for (int j = 0; j < rows_to_send; j++) {
-                memcpy(buffer + j * state->n, state->matrix[start_row + i + j], 
-                       state->n * sizeof(int));
-            }
-            
-            // Send chunk
-            int bytes_sent = 0;
-            while (bytes_sent < total_bytes) {
-                int sent = send(sock, (char*)buffer + bytes_sent, total_bytes - bytes_sent, 0);
-                if (sent < 0) {
-                    perror("Failed to send matrix chunk");
-                    free(buffer);
-                    close(sock);
-                    goto next_slave; // Skip to next slave
-                }
-                bytes_sent += sent;
-            }
-            
-            free(buffer);
-            usleep(CHUNK_DELAY_US);
-        }
-        
-        gettimeofday(&time_after, NULL);
-        double elapsed = (time_after.tv_sec - time_before.tv_sec) + 
-                         (time_after.tv_usec - time_before.tv_usec) / 1000000.0;
-        double mbps = (total_bytes_sent * 8) / (elapsed * 1000000.0);
-        printf("Slave %d: Sent %zu bytes in %.6f seconds (%.2f Mbps)\n", 
-               slave, total_bytes_sent, elapsed, mbps);
-               
-        slave_success[slave] = 1;  // Mark this slave as successful
-        
-        next_slave:
-        start_row += rows_for_this_slave;
+        start_row += args[slave].rows_for_this_slave;
     }
-    
-    // RECEIVE RESULTS FROM EACH SUCCESSFUL SLAVE
+
+    // Array to track which threads completed successfully
+    int thread_success[MAX_SLAVES] = {0};
+
+    // Wait for all threads to complete
+    for (int slave = 0; slave < slave_count; slave++) {
+        void *thread_result;
+        if (pthread_join(threads[slave], &thread_result) == 0) {
+            if (thread_result == NULL) {
+                printf("Warning: Thread for slave %d returned NULL (likely failed)\n", slave);
+            } else {
+                thread_success[slave] = 1;
+                printf("Thread for slave %d completed successfully\n", slave);
+            }
+        } else {
+            perror("Thread join failed");
+        }
+    }
+
+    // Receive normalized submatrices only from slaves that succeeded
     start_row = 0;
     for (int slave = 0; slave < slave_count; slave++) {
-        int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
-        
-        if (!slave_success[slave]) {
-            printf("Skipping slave %d as its processing failed\n", slave);
+        // Skip failed slaves
+        if (!thread_success[slave]) {
+            printf("Skipping slave %d as its thread failed\n", slave);
+            // Calculate rows for this slave to maintain proper row indexing
+            int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
             start_row += rows_for_this_slave;
             continue;
         }
         
-        int sock = sockets[slave];
-        printf("\nReceiving normalized data from slave %d\n", slave);
-        
+        printf("Processing slave %d\n", slave);
+        int rows_for_this_slave = base_rows_per_slave + (slave < extra_rows ? 1 : 0);
+        int sock = args[slave].sock;  // Use the stored socket
+
         // Receive the normalized submatrix in chunks
         int chunk_size = CHUNK_SIZE * state->n * sizeof(double);
         double *buffer = (double *)malloc(chunk_size);
         if (!buffer) {
             perror("Buffer allocation failed");
-            close(sock);
-            start_row += rows_for_this_slave;
-            continue;
+            exit(EXIT_FAILURE);
         }
-        
+
         for (int i = 0; i < rows_for_this_slave; i += CHUNK_SIZE) {
+            
             // Send request for the next chunk
             char request[16];
             snprintf(request, sizeof(request), "SEND %d", i / CHUNK_SIZE);
             if (send(sock, request, strlen(request) + 1, 0) <= 0) {
                 perror("Request send failed");
                 free(buffer);
-                close(sock);
-                break;
+                exit(EXIT_FAILURE);
             }
-            
+        
             // Calculate chunk size
             int rows_to_receive = (i + CHUNK_SIZE > rows_for_this_slave) ? 
                                   (rows_for_this_slave - i) : CHUNK_SIZE;
             int total_bytes = rows_to_receive * state->n * sizeof(double);
-            
+        
             int bytes_received = 0;
             while (bytes_received < total_bytes) {
                 int received = recv(sock, (char*)buffer + bytes_received, total_bytes - bytes_received, 0);
                 if (received <= 0) {
                     perror("Failed to receive normalized matrix chunk");
                     free(buffer);
-                    close(sock);
-                    goto finish_slave;
+                    exit(EXIT_FAILURE);
                 }
                 bytes_received += received;
             }
-            
-            // Copy rows into normalized matrix
+        
+            // Copy rows from the buffer into the normalized matrix
             for (int j = 0; j < rows_to_receive; j++) {
                 memcpy(normalized_matrix[start_row + i + j], buffer + j * state->n, state->n * sizeof(double));
             }
             
-            // Show progress
-            if (i % (CHUNK_SIZE * 5) == 0 || i + CHUNK_SIZE >= rows_for_this_slave) {
-                printf("Received chunk containing rows %d-%d from slave %d\n",
-                       start_row + i, start_row + i + rows_to_receive - 1, slave);
-            }
         }
         
         free(buffer);
         
-        // Receive final ack
-        char ack[4];
-        if (recv(sock, ack, sizeof(ack), 0) != sizeof(ack)) {
-            perror("Ack receive failed");
-        } else {
-            printf("Received final ack from slave %d\n", slave);
-        }
-        
-        finish_slave:
-        close(sock);
         start_row += rows_for_this_slave;
+        char ack[4];
+        if (recv(args[slave].sock, ack, sizeof(ack), 0) != sizeof(ack)) {
+            perror("Ack receive failed");
+            close(args[slave].sock);
+            continue;  // Skip to next slave instead of exiting
+        }
     }
-    
-    printf("\nNormalized matrix processing complete\n");
-    
-    // Free memory
+
+    // Print the final normalized matrix
+    printf("Normalized matrix:\n");
+    //for (int i = 0; i < state->n; i++) {
+    //    for (int j = 0; j < state->n; j++) {
+    //        printf("%.2f ", normalized_matrix[i][j]);
+    //    }
+    //    printf("\n");
+    //}
+
+    // Free the normalized matrix
     for (int i = 0; i < state->n; i++) {
         free(normalized_matrix[i]);
     }
@@ -1020,7 +864,7 @@ int main(int argc, char *argv[]) {
         struct timeval total_time_before, total_time_after;
         gettimeofday(&total_time_before, NULL);
 
-        distribute_submatrices_sequential(&state);
+        distribute_submatrices(&state);
 
         // End timing the entire process
         gettimeofday(&total_time_after, NULL);
