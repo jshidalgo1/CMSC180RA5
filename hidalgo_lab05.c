@@ -16,7 +16,7 @@
 #define MAX_SLAVES 16
 #define BUFFER_SIZE (15* 1024 * 1024)  // 4MB buffer
 #define CONFIG_FILE "config.txt"
-#define CHUNK_SIZE 1              // Rows per chunk
+#define CHUNK_SIZE 64              // Rows per chunk
 #define CHUNK_DELAY_US 1000
 
 typedef struct {
@@ -73,6 +73,9 @@ void read_config(ProgramState *state, int required_slaves) {
 }
 
 void allocate_matrix(ProgramState *state) {
+    // Try to allocate with error handling and recovery
+    printf("Allocating matrices of size %d x %d...\n", state->n, state->n);
+    
     // Allocate memory for the original matrix
     state->original_matrix = (int **)malloc(state->n * sizeof(int *));
     if (!state->original_matrix) {
@@ -84,6 +87,7 @@ void allocate_matrix(ProgramState *state) {
     state->matrix = (int **)malloc(state->n * sizeof(int *));
     if (!state->matrix) {
         perror("Normalized matrix allocation failed");
+        free(state->original_matrix);
         exit(EXIT_FAILURE);
     }
 
@@ -91,15 +95,32 @@ void allocate_matrix(ProgramState *state) {
         state->original_matrix[i] = (int *)malloc(state->n * sizeof(int));
         if (!state->original_matrix[i]) {
             perror("Original matrix row allocation failed");
+            // Clean up previously allocated rows
+            for (int j = 0; j < i; j++) {
+                free(state->original_matrix[j]);
+            }
+            free(state->original_matrix);
+            free(state->matrix);
             exit(EXIT_FAILURE);
         }
 
         state->matrix[i] = (int *)malloc(state->n * sizeof(int));
         if (!state->matrix[i]) {
             perror("Normalized matrix row allocation failed");
+            // Clean up previously allocated rows
+            for (int j = 0; j <= i; j++) {
+                free(state->original_matrix[j]);
+            }
+            free(state->original_matrix);
+            for (int j = 0; j < i; j++) {
+                free(state->matrix[j]);
+            }
+            free(state->matrix);
             exit(EXIT_FAILURE);
         }
     }
+    
+    printf("Matrix allocation successful\n");
 }
 
 void free_matrix(ProgramState *state) {
@@ -199,11 +220,18 @@ void *send_to_slave(void *arg) {
     // Store the socket in args
     args->sock = sock;
 
-    // Set TCP_NODELAY and buffer sizes
+    // Set TCP_NODELAY and larger buffer sizes
     int flag = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
-    int buf_size = BUFFER_SIZE;
+    int buf_size = BUFFER_SIZE * 2; // Double the buffer size
     setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+
+    // Add timeout
+    struct timeval timeout;
+    timeout.tv_sec = 30;  // 30 second timeout
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
     struct sockaddr_in slave_addr;
     memset(&slave_addr, 0, sizeof(slave_addr));
@@ -232,8 +260,16 @@ void *send_to_slave(void *arg) {
            start_row, start_row + rows_for_this_slave - 1, slave);
 
     size_t total_bytes_sent = 0; // Track total bytes sent
-
-    for (int i = 0; i < rows_for_this_slave; i += CHUNK_SIZE) {
+    int total_chunks = (rows_for_this_slave + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    
+    for (int i = 0, chunk_num = 0; i < rows_for_this_slave; i += CHUNK_SIZE, chunk_num++) {
+        // Show progress every 10th chunk or at beginning/end
+        if (chunk_num == 0 || chunk_num == total_chunks-1 || chunk_num % 10 == 0) {
+            printf("Slave %d: Sending chunk %d/%d (%.1f%%)\n", 
+                slave, chunk_num+1, total_chunks, 
+                (chunk_num+1) * 100.0 / total_chunks);
+        }
+        
         int rows_to_send = (i + CHUNK_SIZE > rows_for_this_slave) ? 
                           (rows_for_this_slave - i) : CHUNK_SIZE;
         int total_bytes = rows_to_send * state->n * sizeof(int);
@@ -255,10 +291,6 @@ void *send_to_slave(void *arg) {
         free(buffer);
         // Add delay after sending chunk
         usleep(CHUNK_DELAY_US);
-
-        
-        // double delay_in_seconds = (double)total_bytes / 6062500; // 1,875,000 bytes per second
-        // usleep((useconds_t)(delay_in_seconds * 1e6)); // Convert seconds to microseconds
     }
 
     // End timing
@@ -574,6 +606,14 @@ void slave_listen(ProgramState *state) {
     close(server_fd);
 }
 
+// Add this function before main() around line 532
+int calculate_optimal_chunk_size(int matrix_size) {
+    if (matrix_size <= 1000) return 32;
+    else if (matrix_size <= 5000) return 64;
+    else if (matrix_size <= 10000) return 128;
+    else return 256;
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 4 && argc != 5) {
         printf("Usage: %s <matrix_size> <port> <status (0=master, 1=slave)> [slave_count]\n", argv[0]);
@@ -610,6 +650,11 @@ int main(int argc, char *argv[]) {
         //printf("Master created original matrix:\n");
         //print_matrix(state.original_matrix, state.n, state.n);
 
+        // Add before distribute_submatrices() call in main() (around line 575)
+        // Calculate optimal chunk size based on matrix dimensions
+        int optimal_chunk = calculate_optimal_chunk_size(state.n);
+        printf("Using optimal chunk size of %d for matrix size %d\n", optimal_chunk, state.n);
+        
         // Start timing the entire process
         struct timeval total_time_before, total_time_after;
         gettimeofday(&total_time_before, NULL);
