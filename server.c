@@ -318,67 +318,23 @@ float **combine_results() {
 
 int main() {
     srand(time(NULL));
-    int server_fd, new_socket;
-    struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
-
-    // Create socket
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("Socket failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Set socket options
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("Setsockopt failed");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    // Bind socket
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("Bind failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Listen for connections
-    if (listen(server_fd, 3) < 0) {
-        perror("Listen failed");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Server listening on port %d...\n", PORT);
-
-    // Accept connection
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0) {
-        perror("Accept failed");
-        exit(EXIT_FAILURE);
-    }
-
-    printf("Client connected\n");
-
-    // Create and send matrix
-    int rows = 20000, cols = 20000;  // Default size - adjust as needed
-    printf("Creating %dx%d matrix...\n", rows, cols);
-    int **matrix = create_random_matrix(rows, cols);
     
     // Read client configuration
+    printf("Reading client configuration from %s...\n", CONFIG_FILE);
     read_client_config();
     
-    // Create matrix
-    global_rows = 100;
-    global_cols = 100;
+    // Create matrix - adjust size as needed
+    global_rows = 1000;  // Adjust matrix size as needed
+    global_cols = 1000;
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
     // Connect to clients
+    printf("Connecting to clients...\n");
     connect_to_clients();
     
     // Distribute matrix work
+    printf("Distributing matrix work...\n");
     distribute_matrix_work();
     
     // Create threads to handle clients
@@ -388,6 +344,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
+    printf("Starting client threads...\n");
     for (int i = 0; i < client_count; i++) {
         if (clients[i].socket != -1) {
             if (pthread_create(&threads[i], NULL, handle_client, (void *)&clients[i]) != 0) {
@@ -405,9 +362,10 @@ int main() {
     }
     
     // Combine results
+    printf("Combining results from all clients...\n");
     float **combined_matrix = combine_results();
     
-    // Print a sample of the normalized matrix (first 5x5 elements)
+    // Print a sample of the normalized matrix
     printf("Sample of combined normalized matrix (up to 5x5):\n");
     for (int i = 0; i < (global_rows < 5 ? global_rows : 5); i++) {
         for (int j = 0; j < (global_cols < 5 ? global_cols : 5); j++) {
@@ -433,5 +391,6 @@ int main() {
     free(clients);
     free(threads);
     
+    printf("Process completed successfully\n");
     return 0;
 }
