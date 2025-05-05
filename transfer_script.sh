@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # File to transfer
-FILE="hidalgo_lab05"
+FILE="client"
 
 # Remote username
 USER="cmsc180"
