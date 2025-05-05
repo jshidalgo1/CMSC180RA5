@@ -1,0 +1,13 @@
+user@user-Veriton-X2665G:~/Desktop/CMSC180RA5$ ./hidalgo_lab05 5000 5000 0 2
+Running as master with 2 slaves
+Allocating matrices of size 5000 x 5000...
+Matrix allocation successful
+Using optimal chunk size of 64 for matrix size 5000
+Sending data to slave 0 at IP 10.0.4.171, Port 5001
+Sending data to slave 1 at IP 10.0.5.229, Port 5002
+Testing connection to slave 0...
+Testing connection to slave 1...
+Failed to receive test acknowledgment: Connection reset by peer
+Failed to receive test acknowledgment: Connection reset by peer
+Processing slave 0
+Request send failed: Bad file descriptor
