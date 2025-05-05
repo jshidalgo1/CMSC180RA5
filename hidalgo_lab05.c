@@ -310,6 +310,7 @@ void *send_to_slave(void *arg) {
     struct timeval timeout;
     timeout.tv_sec = 60;
     timeout.tv_usec = 0;
+    timeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     
     // Now send the actual matrix info
