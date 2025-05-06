@@ -6,6 +6,7 @@
 #include <time.h>
 #include <asm-generic/socket.h>
 #include <pthread.h>
+#include <sys/time.h>  // Add this for gettimeofday
 #define PORT 8080
 #define MAX_MATRIX_SIZE 30000
 #define CHUNK_SIZE 1000  // Number of rows to send at a time
@@ -354,6 +355,14 @@ float **combine_results() {
     return combined;
 }
 
+// Add this function to get time in milliseconds
+double get_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
+}
+
+// Modify main() function to add timing
 int main() {
     srand(time(NULL));
     
@@ -367,15 +376,10 @@ int main() {
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
-    // printf("\nOriginal matrix:\n");
-    // for (int i = 0; i < global_rows; i++) {
-    //     for (int j = 0; j < global_cols; j++) {
-    //         printf("%3d ", global_matrix[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("\n");
-
+    // Start timing before distribution
+    double start_time = get_time_ms();
+    printf("Starting matrix distribution at %.2f ms\n", start_time);
+    
     // Connect to clients
     printf("Connecting to clients...\n");
     connect_to_clients();
@@ -412,14 +416,21 @@ int main() {
     printf("Combining results from all clients...\n");
     float **combined_matrix = combine_results();
     
-    // // Print a sample of the normalized matrix
-    // printf("Sample of combined normalized matrix (up to 5x5):\n");
-    // for (int i = 0; i < global_rows; i++) {
-    //     for (int j = 0; j < global_cols; j++) {
-    //         printf("%.4f ", combined_matrix[i][j]);
-    //     }
-    //     printf("\n");
-    // }
+    // End timing after rebuilding the matrix
+    double end_time = get_time_ms();
+    double elapsed_time = end_time - start_time;
+    printf("\nTotal processing time: %.2f ms\n", elapsed_time);
+    printf("Matrix size: %dx%d, Number of clients: %d\n", global_rows, global_cols, client_count);
+    printf("Average time per element: %.6f ms\n", elapsed_time / (global_rows * global_cols));
+    
+    // Print a sample of the normalized matrix (first 5x5 elements)
+    printf("Sample of combined normalized matrix (up to 5x5):\n");
+    for (int i = 0; i < (global_rows < 5 ? global_rows : 5); i++) {
+        for (int j = 0; j < (global_cols < 5 ? global_cols : 5); j++) {
+            printf("%.4f ", combined_matrix[i][j]);
+        }
+        printf("\n");
+    }
     
     // Clean up
     free_matrix(global_matrix, global_rows);

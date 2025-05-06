@@ -6,10 +6,18 @@
 #include <float.h>
 #include <limits.h>
 #include <asm-generic/socket.h>
+#include <sys/time.h>  // Add this for gettimeofday
 
 #define SERVER_IP "10.0.4.174"
 #define PORT 8080
 #define CHUNK_SIZE 1000
+
+// Add this function to get time in milliseconds
+double get_time_ms() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
+}
 
 int **allocate_matrix(int rows, int cols) {
     int **matrix = (int **)malloc(rows * sizeof(int *));
@@ -93,7 +101,11 @@ int **receive_matrix(int sock, int *rows, int *cols) {
     return matrix;
 }
 
+// Modify min_max_transform function to include timing
 float **min_max_transform(int **matrix, int rows, int cols) {
+    // Start timing the normalization process
+    double start_time = get_time_ms();
+    
     // Create normalized float matrix
     float **normalized = allocate_float_matrix(rows, cols);
     
@@ -120,8 +132,19 @@ float **min_max_transform(int **matrix, int rows, int cols) {
             }
         }
         
-        printf("Row %d: Min value: %d, Max value: %d\n", i, min_val, max_val);
+        // Only print stats for some rows when the matrix is large
+        if (rows <= 20 || i % (rows/10) == 0) {
+            printf("Row %d: Min value: %d, Max value: %d\n", i, min_val, max_val);
+        }
     }
+    
+    // End timing and calculate elapsed time
+    double end_time = get_time_ms();
+    double elapsed_time = end_time - start_time;
+    
+    printf("\nMin-max transformation completed in %.2f ms\n", elapsed_time);
+    printf("Matrix size: %dx%d\n", rows, cols);
+    printf("Average time per element: %.6f ms\n\n", elapsed_time / (rows * cols));
     
     return normalized;
 }
@@ -226,24 +249,14 @@ int main(int argc, char *argv[]) {
     }
     
     printf("Server connected\n");
-    
+        
     // Receive submatrix from server
     int rows, cols;
     printf("Waiting to receive matrix from server...\n");
     int **matrix = receive_matrix(client_sock, &rows, &cols);
     printf("Received %dx%d submatrix from server\n", rows, cols);
     
-    // // Print the received matrix
-    // printf("\nReceived matrix:\n");
-    // for (int i = 0; i < rows; i++) {
-    //     for (int j = 0; j < cols; j++) {
-    //         printf("%3d ", matrix[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("\n");
-
-    // Apply min-max transformation
+    // Apply min-max transformation (timing is inside this function now)
     printf("Applying min-max normalization...\n");
     float **normalized_matrix = min_max_transform(matrix, rows, cols);
     
@@ -272,7 +285,7 @@ int main(int argc, char *argv[]) {
         send_float_matrix(client_sock, normalized_matrix, rows, cols);
         printf("Normalized matrix sent back to server\n");
     }
-    
+        
     // Clean up
     free_matrix(matrix, rows);
     free_float_matrix(normalized_matrix, rows);
