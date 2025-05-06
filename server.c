@@ -356,12 +356,11 @@ float **combine_results() {
 }
 
 // Add this function to get time in milliseconds
-double get_time_ms() {
+double get_time_s() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
+    return tv.tv_sec + (tv.tv_usec / 1000000.0);
 }
-
 // Modify main() function to add timing
 int main() {
     srand(time(NULL));
@@ -377,8 +376,8 @@ int main() {
     global_matrix = create_random_matrix(global_rows, global_cols);
     
     // Start timing before distribution
-    double start_time = get_time_ms();
-    printf("Starting matrix distribution at %.2f ms\n", start_time);
+    double start_time = get_time_s();
+    printf("Starting matrix distribution at %.2f s\n", start_time);
     
     // Connect to clients
     printf("Connecting to clients...\n");
@@ -417,11 +416,11 @@ int main() {
     float **combined_matrix = combine_results();
     
     // End timing after rebuilding the matrix
-    double end_time = get_time_ms();
+    double end_time = get_time_s();
     double elapsed_time = end_time - start_time;
-    printf("\nTotal processing time: %.2f ms\n", elapsed_time);
+    printf("\nTotal processing time: %.2f s\n", elapsed_time);
     printf("Matrix size: %dx%d, Number of clients: %d\n", global_rows, global_cols, client_count);
-    printf("Average time per element: %.6f ms\n", elapsed_time / (global_rows * global_cols));
+    printf("Average time per element: %.6f s\n", elapsed_time / (global_rows * global_cols));
     
     // Print a sample of the normalized matrix (first 5x5 elements)
     printf("Sample of combined normalized matrix (up to 5x5):\n");

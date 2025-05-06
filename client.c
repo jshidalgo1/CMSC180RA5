@@ -12,11 +12,11 @@
 #define PORT 8080
 #define CHUNK_SIZE 1000
 
-// Add this function to get time in milliseconds
-double get_time_ms() {
+// Replace get_time_ms function with get_time_s
+double get_time_s() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (tv.tv_sec * 1000.0) + (tv.tv_usec / 1000.0);
+    return tv.tv_sec + (tv.tv_usec / 1000000.0);
 }
 
 int **allocate_matrix(int rows, int cols) {
@@ -104,7 +104,7 @@ int **receive_matrix(int sock, int *rows, int *cols) {
 // Modify min_max_transform function to include timing
 float **min_max_transform(int **matrix, int rows, int cols) {
     // Start timing the normalization process
-    double start_time = get_time_ms();
+    double start_time = get_time_s();
     
     // Create normalized float matrix
     float **normalized = allocate_float_matrix(rows, cols);
@@ -139,12 +139,11 @@ float **min_max_transform(int **matrix, int rows, int cols) {
     }
     
     // End timing and calculate elapsed time
-    double end_time = get_time_ms();
+    double end_time = get_time_s();
     double elapsed_time = end_time - start_time;
     
-    printf("\nMin-max transformation completed in %.2f ms\n", elapsed_time);
-    printf("Matrix size: %dx%d\n", rows, cols);
-    printf("Average time per element: %.6f ms\n\n", elapsed_time / (rows * cols));
+    printf("\nMin-max transformation completed in %.2f s\n", elapsed_time);
+    printf("Average time per element: %.9f s\n\n", elapsed_time / (rows * cols));
     
     return normalized;
 }
@@ -160,7 +159,7 @@ void send_float_matrix(int sock, float **matrix, int rows, int cols) {
     }
 
     // Send in smaller chunks with delays
-    int chunk_size = 100;  // Use a smaller chunk size
+    int chunk_size = 1000;  // Use a smaller chunk size
     
     // Then send matrix data in chunks
     for (int chunk_start = 0; chunk_start < rows; chunk_start += chunk_size) {
