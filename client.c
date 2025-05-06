@@ -228,7 +228,7 @@ int main(int argc, char *argv[]) {
     printf("Applying min-max normalization...\n");
     float **normalized_matrix = min_max_transform(matrix, rows, cols);
     
-    // Print a sample of the normalized matrix (first 5x5 elements or less)
+    // Print a sample of the normalized matrix
     printf("Sample of normalized matrix (up to 5x5):\n");
     for (int i = 0; i < (rows < 5 ? rows : 5); i++) {
         for (int j = 0; j < (cols < 5 ? cols : 5); j++) {
@@ -237,10 +237,22 @@ int main(int argc, char *argv[]) {
         printf("\n");
     }
     
-    // Send normalized matrix back to server
-    printf("Sending normalized matrix back to server...\n");
-    send_float_matrix(client_sock, normalized_matrix, rows, cols);
-    printf("Normalized matrix sent back to server\n");
+    // Wait for request from server before sending the result
+    char request_code;
+    printf("Waiting for server to request normalized matrix...\n");
+    if (recv(client_sock, &request_code, sizeof(char), MSG_WAITALL) != sizeof(char)) {
+        perror("Failed to receive request from server");
+        exit(EXIT_FAILURE);
+    }
+    
+    if (request_code != 1) {
+        printf("Received unexpected request code: %d\n", request_code);
+    } else {
+        // Send normalized matrix back to server
+        printf("Sending normalized matrix back to server...\n");
+        send_float_matrix(client_sock, normalized_matrix, rows, cols);
+        printf("Normalized matrix sent back to server\n");
+    }
     
     // Clean up
     free_matrix(matrix, rows);

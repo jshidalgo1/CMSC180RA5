@@ -271,6 +271,16 @@ void *handle_client(void *arg) {
     // Send submatrix to client
     send_submatrix(client->socket, global_matrix, client->start_row, client->end_row, client->cols);
     
+    // Wait a bit to ensure client has time to process
+    sleep(1);
+    
+    // Send a request for the normalized matrix
+    char request_code = 1;  // 1 = request for normalized matrix
+    if (send(client->socket, &request_code, sizeof(char), 0) < 0) {
+        perror("Failed to send request for normalized matrix");
+        return NULL;
+    }
+    
     // Receive normalized matrix back from client
     printf("Waiting to receive normalized matrix from client at %s:%d...\n", client->ip, client->port);
     int rows, cols;
