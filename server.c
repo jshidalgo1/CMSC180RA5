@@ -100,23 +100,30 @@ float **receive_float_matrix(int sock, int *rows, int *cols) {
     int dimensions[2];
     if (recv(sock, dimensions, sizeof(dimensions), MSG_WAITALL) != sizeof(dimensions)) {
         perror("Receive dimensions failed");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     *rows = dimensions[0];
     *cols = dimensions[1];
+    
+    printf("Receiving matrix of size %dx%d\n", *rows, *cols);
 
     // Allocate matrix
     float **matrix = (float **)malloc(*rows * sizeof(float *));
     if (!matrix) {
         perror("Matrix allocation failed");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     for (int i = 0; i < *rows; i++) {
         matrix[i] = (float *)malloc(*cols * sizeof(float));
         if (!matrix[i]) {
             perror("Matrix row allocation failed");
-            exit(EXIT_FAILURE);
+            // Free previously allocated memory
+            for (int j = 0; j < i; j++) {
+                free(matrix[j]);
+            }
+            free(matrix);
+            return NULL;
         }
     }
 
@@ -126,16 +133,37 @@ float **receive_float_matrix(int sock, int *rows, int *cols) {
         int chunk_rows;
         if (recv(sock, &chunk_rows, sizeof(int), MSG_WAITALL) != sizeof(int)) {
             perror("Receive chunk rows failed");
-            exit(EXIT_FAILURE);
+            // Free allocated memory
+            for (int i = 0; i < *rows; i++) {
+                free(matrix[i]);
+            }
+            free(matrix);
+            return NULL;
         }
+        
+        printf("Receiving chunk of %d rows\n", chunk_rows);
 
         for (int i = 0; i < chunk_rows; i++) {
-            if (recv(sock, matrix[received_rows + i], *cols * sizeof(float), MSG_WAITALL) != *cols * sizeof(float)) {
-                perror("Receive row failed");
-                exit(EXIT_FAILURE);
+            ssize_t total_received = 0;
+            size_t to_receive = *cols * sizeof(float);
+            
+            while (total_received < to_receive) {
+                ssize_t received = recv(sock, ((char*)matrix[received_rows + i]) + total_received, 
+                                      to_receive - total_received, MSG_WAITALL);
+                if (received <= 0) {
+                    perror("Receive row failed");
+                    // Free allocated memory
+                    for (int j = 0; j < *rows; j++) {
+                        free(matrix[j]);
+                    }
+                    free(matrix);
+                    return NULL;
+                }
+                total_received += received;
             }
         }
         received_rows += chunk_rows;
+        printf("Received %d/%d rows\n", received_rows, *rows);
     }
 
     return matrix;

@@ -126,6 +126,8 @@ float **min_max_transform(int **matrix, int rows, int cols) {
     return normalized;
 }
 
+// Modify send_float_matrix to send data in smaller chunks with delays
+
 void send_float_matrix(int sock, float **matrix, int rows, int cols) {
     // First send matrix dimensions
     int dimensions[2] = {rows, cols};
@@ -134,9 +136,12 @@ void send_float_matrix(int sock, float **matrix, int rows, int cols) {
         exit(EXIT_FAILURE);
     }
 
+    // Send in smaller chunks with delays
+    int chunk_size = 100;  // Use a smaller chunk size
+    
     // Then send matrix data in chunks
-    for (int chunk_start = 0; chunk_start < rows; chunk_start += CHUNK_SIZE) {
-        int chunk_end = (chunk_start + CHUNK_SIZE < rows) ? chunk_start + CHUNK_SIZE : rows;
+    for (int chunk_start = 0; chunk_start < rows; chunk_start += chunk_size) {
+        int chunk_end = (chunk_start + chunk_size < rows) ? chunk_start + chunk_size : rows;
         int chunk_rows = chunk_end - chunk_start;
 
         // Send chunk rows count
@@ -147,11 +152,25 @@ void send_float_matrix(int sock, float **matrix, int rows, int cols) {
 
         // Send each row in the chunk
         for (int i = chunk_start; i < chunk_end; i++) {
-            if (send(sock, matrix[i], cols * sizeof(float), 0) < 0) {
-                perror("Send row failed");
-                exit(EXIT_FAILURE);
+            // Add buffer for potential large data
+            ssize_t total_sent = 0;
+            size_t to_send = cols * sizeof(float);
+            
+            while (total_sent < to_send) {
+                ssize_t sent = send(sock, ((char*)matrix[i]) + total_sent, to_send - total_sent, 0);
+                if (sent < 0) {
+                    perror("Send row failed");
+                    exit(EXIT_FAILURE);
+                }
+                total_sent += sent;
             }
+            
+            // Add a small delay between sending rows to prevent overwhelming the socket buffer
+            usleep(100); // 100 microseconds
         }
+        
+        // Add a slightly longer delay between chunks
+        usleep(10000); // 10 milliseconds
     }
 }
 
