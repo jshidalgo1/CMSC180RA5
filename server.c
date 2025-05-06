@@ -334,19 +334,19 @@ int main() {
     read_client_config();
     
     // Create matrix - adjust size as needed
-    global_rows = 10;  // Adjust matrix size as needed
-    global_cols = 10;
+    global_rows = 20000;  // Adjust matrix size as needed
+    global_cols = 20000;
     printf("Creating %dx%d matrix...\n", global_rows, global_cols);
     global_matrix = create_random_matrix(global_rows, global_cols);
     
-    printf("\nOriginal matrix:\n");
-    for (int i = 0; i < global_rows; i++) {
-        for (int j = 0; j < global_cols; j++) {
-            printf("%3d ", global_matrix[i][j]);
-        }
-        printf("\n");
-    }
-    printf("\n");
+    // printf("\nOriginal matrix:\n");
+    // for (int i = 0; i < global_rows; i++) {
+    //     for (int j = 0; j < global_cols; j++) {
+    //         printf("%3d ", global_matrix[i][j]);
+    //     }
+    //     printf("\n");
+    // }
+    // printf("\n");
 
     // Connect to clients
     printf("Connecting to clients...\n");
@@ -384,14 +384,14 @@ int main() {
     printf("Combining results from all clients...\n");
     float **combined_matrix = combine_results();
     
-    // Print a sample of the normalized matrix
-    printf("Sample of combined normalized matrix (up to 5x5):\n");
-    for (int i = 0; i < global_rows; i++) {
-        for (int j = 0; j < global_cols; j++) {
-            printf("%.4f ", combined_matrix[i][j]);
-        }
-        printf("\n");
-    }
+    // // Print a sample of the normalized matrix
+    // printf("Sample of combined normalized matrix (up to 5x5):\n");
+    // for (int i = 0; i < global_rows; i++) {
+    //     for (int j = 0; j < global_cols; j++) {
+    //         printf("%.4f ", combined_matrix[i][j]);
+    //     }
+    //     printf("\n");
+    // }
     
     // Clean up
     free_matrix(global_matrix, global_rows);
