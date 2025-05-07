@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 #include <float.h>
 #include <limits.h>
 #include <asm-generic/socket.h>
+#include <sched.h> 
 
 // Common defines
 #define MAX_MATRIX_SIZE 30000
@@ -434,40 +436,54 @@ void distribute_matrix_work() {
 
 void *handle_client(void *arg) {
     ClientInfo *client = (ClientInfo *)arg;
-    
+
+    // Set core affinity for this thread
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+
+    // Assign this thread to a specific core (e.g., core `client->start_row % CPU_COUNT`)
+    int core_id = client->start_row % sysconf(_SC_NPROCESSORS_ONLN); // Use available cores
+    CPU_SET(core_id, &cpuset);
+
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+        perror("Failed to set thread affinity");
+    } else {
+        printf("Client at %s:%d assigned to core %d\n", client->ip, client->port, core_id);
+    }
+
     printf("Sending submatrix to client at %s:%d (rows %d-%d)\n", 
            client->ip, client->port, client->start_row, client->end_row - 1);
-    
+
     // Send submatrix to client
     send_submatrix(client->socket, global_matrix, client->start_row, client->end_row, client->cols);
-    
+
     // Wait a bit to ensure client has time to process
     sleep(1);
-    
+
     // Send a request for the normalized matrix
     char request_code = 1;  // 1 = request for normalized matrix
     if (send(client->socket, &request_code, sizeof(char), 0) < 0) {
         perror("Failed to send request for normalized matrix");
         return NULL;
     }
-    
+
     // Receive normalized matrix back from client
     printf("Waiting to receive normalized matrix from client at %s:%d...\n", client->ip, client->port);
     int rows, cols;
     client->partial_result = receive_float_matrix(client->socket, &rows, &cols);
-    
+
     if (client->partial_result == NULL) {
         printf("Failed to receive matrix from client at %s:%d\n", client->ip, client->port);
         return NULL;
     }
-    
+
     if (rows != client->rows || cols != client->cols) {
         printf("Warning: Client at %s:%d returned matrix of unexpected size: %dx%d (expected %dx%d)\n",
                client->ip, client->port, rows, cols, client->rows, client->cols);
     }
-    
+
     printf("Received normalized matrix from client at %s:%d\n", client->ip, client->port);
-    
+
     return NULL;
 }
 
